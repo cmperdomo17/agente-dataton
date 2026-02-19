@@ -451,7 +451,6 @@ def _perfil_completo_cliente(customer_id: str) -> str:
 
     return "\n".join(parts)
 
-
 # ── Tabla de operaciones disponibles ──────────────────────────────────
 
 _OPERATIONS = {
