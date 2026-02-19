@@ -1,0 +1,232 @@
+[
+  {
+    "table": "customers",
+    "columns": [
+      {"column": "customer_id", "description": "Identificador único del cliente (PK). Inicia en 1001."},
+      {"column": "tipo_id", "description": "Tipo de documento de identidad: CC (Cédula de Ciudadanía), CE (Cédula de Extranjería), NIT, PA (Pasaporte)."},
+      {"column": "dni", "description": "Número de documento de identidad del cliente."},
+      {"column": "name", "description": "Nombre del cliente. Puede contener errores intencionales (~5%): minúsculas, letras faltantes/duplicadas/intercambiadas, sin tildes."},
+      {"column": "last_name1", "description": "Primer apellido del cliente. Puede contener errores intencionales (~5%)."},
+      {"column": "last_name2", "description": "Segundo apellido del cliente. Puede estar vacío (~20% de los clientes)."},
+      {"column": "birthday", "description": "Fecha de nacimiento en formato ISO 8601 (YYYY-MM-DD). Cliente debe ser mayor de 18 años."},
+      {"column": "phone", "description": "Número de celular colombiano en formato +57 3XX XXX XXXX."},
+      {"column": "registration_date", "description": "Fecha de registro del cliente en formato ISO 8601 (YYYY-MM-DD)."},
+      {"column": "account_status", "description": "Estado de la cuenta: active, inactive, suspended."},
+      {"column": "is_premium", "description": "Indica si el cliente es premium (true/false). ~15% son premium."}
+    ]
+  },
+  {
+    "table": "customer_emails",
+    "columns": [
+      {"column": "email_id", "description": "Identificador único del email (PK)."},
+      {"column": "customer_id", "description": "Referencia al cliente (FK → customers.customer_id)."},
+      {"column": "email", "description": "Dirección de correo electrónico. Puede contener errores intencionales (~5%): typo en dominio, sin @, doble punto."},
+      {"column": "email_type", "description": "Tipo de email: personal, work, other."},
+      {"column": "is_primary", "description": "Indica si es el email principal del cliente (true/false). Cada cliente tiene exactamente 1 email con is_primary=true."},
+      {"column": "is_verified", "description": "Indica si el email ha sido verificado (true/false)."}
+    ]
+  },
+  {
+    "table": "addresses",
+    "columns": [
+      {"column": "address_id", "description": "Identificador único de la dirección (PK)."},
+      {"column": "customer_id", "description": "Referencia al cliente (FK → customers.customer_id)."},
+      {"column": "address_line1", "description": "Dirección principal con nomenclatura colombiana (ej: Calle 45 # 12-34)."},
+      {"column": "address_line2", "description": "Complemento de dirección: apartamento, torre, bloque, etc. Puede estar vacío."},
+      {"column": "city", "description": "Ciudad de Colombia (ej: Bogotá D.C., Medellín, Cali)."},
+      {"column": "department", "description": "Departamento colombiano correspondiente a la ciudad."},
+      {"column": "postal_code", "description": "Código postal colombiano de 6 dígitos."},
+      {"column": "country", "description": "País. Siempre 'Colombia'."},
+      {"column": "delivery_notes", "description": "Instrucciones especiales para la entrega. Puede estar vacío."},
+      {"column": "landmark", "description": "Punto de referencia cercano a la dirección. Puede estar vacío."},
+      {"column": "requires_appointment", "description": "Indica si se requiere cita previa para entrega (true/false)."},
+      {"column": "address_type", "description": "Tipo de dirección: home, work, other."},
+      {"column": "is_default", "description": "Indica si es la dirección predeterminada del cliente (true/false)."},
+      {"column": "is_residential", "description": "Indica si es una dirección residencial (true/false)."}
+    ]
+  },
+  {
+    "table": "categories",
+    "columns": [
+      {"column": "category_id", "description": "Identificador único de la categoría (PK)."},
+      {"column": "name", "description": "Nombre de la categoría de producto (ej: Electrónica, Electrodomésticos, Hogar y Muebles, Ropa y Calzado, Deportes y Fitness, Belleza y Cuidado Personal, Libros y Papelería, Juguetes y Bebés)."}
+    ]
+  },
+  {
+    "table": "brands",
+    "columns": [
+      {"column": "brand_id", "description": "Identificador único de la marca (PK)."},
+      {"column": "name", "description": "Nombre de la marca del producto (ej: Samsung, Apple, Nike, Sony)."}
+    ]
+  },
+  {
+    "table": "products",
+    "columns": [
+      {"column": "product_id", "description": "Identificador único del producto (PK). Inicia en 5001."},
+      {"column": "category_id", "description": "Referencia a la categoría (FK → categories.category_id)."},
+      {"column": "brand_id", "description": "Referencia a la marca (FK → brands.brand_id)."},
+      {"column": "name", "description": "Nombre comercial del producto."},
+      {"column": "description", "description": "Descripción breve del producto."},
+      {"column": "specifications", "description": "Especificaciones técnicas del producto en formato texto."},
+      {"column": "warranty_months", "description": "Duración de la garantía en meses (6, 12, 18, 24 o 36)."},
+      {"column": "return_days", "description": "Plazo de devolución en días (0, 30 o 60). Si es 0, el producto es venta final."},
+      {"column": "is_final_sale", "description": "Indica si el producto es venta final sin devolución (true/false). true cuando return_days=0."},
+      {"column": "free_shipping", "description": "Indica si el producto tiene envío gratuito (true/false)."},
+      {"column": "shipping_days", "description": "Días estimados de envío (2-10 días)."},
+      {"column": "price", "description": "Precio del producto en pesos colombianos (COP). Formato decimal con 2 decimales."},
+      {"column": "active", "description": "Indica si el producto está activo para la venta (true/false). ~85% están activos."},
+      {"column": "weight_kg", "description": "Peso del producto en kilogramos."},
+      {"column": "requires_installation", "description": "Indica si el producto requiere instalación profesional (true/false)."},
+      {"column": "installation_notes", "description": "Instrucciones de instalación. Solo presente si requires_installation=true."}
+    ]
+  },
+  {
+    "table": "stock",
+    "columns": [
+      {"column": "stock_id", "description": "Identificador único del registro de stock (PK)."},
+      {"column": "product_id", "description": "Referencia al producto (FK → products.product_id). Un registro por producto."},
+      {"column": "warehouse_location", "description": "Ubicación de la bodega: principal, norte, centro."},
+      {"column": "stock_qty", "description": "Cantidad total en inventario."},
+      {"column": "reserved_qty", "description": "Cantidad reservada para pedidos pendientes. available_qty = stock_qty - reserved_qty (calculable, no almacenado)."},
+      {"column": "low_stock_threshold", "description": "Umbral de stock bajo. Si available_qty < este valor, se programa reabastecimiento."},
+      {"column": "restock_date", "description": "Fecha estimada de reabastecimiento en formato YYYY-MM-DD. Solo presente si el stock disponible es bajo."},
+      {"column": "last_updated", "description": "Fecha y hora de la última actualización del stock en formato YYYY-MM-DD HH:MM:SS."}
+    ]
+  },
+  {
+    "table": "orders",
+    "columns": [
+      {"column": "order_id", "description": "Identificador único del pedido (PK). Inicia en 1."},
+      {"column": "customer_id", "description": "Referencia al cliente que realizó el pedido (FK → customers.customer_id)."},
+      {"column": "address_id", "description": "Referencia a la dirección de entrega (FK → addresses.address_id)."},
+      {"column": "order_date", "description": "Fecha y hora del pedido en formato YYYY-MM-DD HH:MM:SS."},
+      {"column": "payment_confirmed_at", "description": "Fecha y hora de confirmación del pago. Vacío si el pago no ha sido confirmado."},
+      {"column": "shipped_at", "description": "Fecha y hora de envío del pedido. Vacío si aún no se ha enviado."},
+      {"column": "delivered_at", "description": "Fecha y hora de entrega. Vacío si no ha sido entregado. La garantía y devolución se calculan desde esta fecha."},
+      {"column": "cancelled_at", "description": "Fecha y hora de cancelación. Vacío si no ha sido cancelado."},
+      {"column": "status", "description": "Estado actual del pedido: pending, payment_confirmed, preparing, shipped, out_for_delivery, delivered, cancelled, returned."},
+      {"column": "applied_promotion_id", "description": "Referencia a la promoción aplicada (FK → promotions.promotion_id). Vacío si no se aplicó ninguna promoción."},
+      {"column": "subtotal", "description": "Subtotal del pedido después de descuentos = SUM(order_items.qty × (order_items.unit_price - order_items.discount_per_unit)). Formato decimal."},
+      {"column": "total_discount_amount", "description": "Monto total del descuento aplicado = SUM(order_items.qty × order_items.discount_per_unit). Es 0.00 si no hay promoción."},
+      {"column": "shipping_cost", "description": "Costo de envío en COP. Puede ser 0 si todos los productos tienen envío gratis o si se aplicó una promoción de free_shipping."},
+      {"column": "tax", "description": "Impuesto IVA = subtotal × 0.19 (19% IVA Colombia). Calculado sobre el subtotal ya descontado."},
+      {"column": "total_amount", "description": "Monto total = subtotal + shipping_cost + tax."},
+      {"column": "delivery_method", "description": "Método de entrega: home_delivery (85%), pickup_point (15%)."},
+      {"column": "payment_method", "description": "Método de pago: tarjeta_credito, tarjeta_debito, PSE, contraentrega, nequi, daviplata."},
+      {"column": "card_id", "description": "Referencia a la tarjeta usada (FK → cards.card_id). Vacío si el pago no fue con tarjeta."},
+      {"column": "customer_notes", "description": "Notas del cliente sobre el pedido. Puede estar vacío."},
+      {"column": "internal_notes", "description": "Notas internas del sistema. Puede estar vacío."},
+      {"column": "cancellation_reason", "description": "Razón de cancelación. Solo presente cuando status=cancelled."}
+    ]
+  },
+  {
+    "table": "order_items",
+    "columns": [
+      {"column": "item_id", "description": "Identificador único del ítem (PK)."},
+      {"column": "order_id", "description": "Referencia al pedido (FK → orders.order_id)."},
+      {"column": "product_id", "description": "Referencia al producto (FK → products.product_id)."},
+      {"column": "qty", "description": "Cantidad comprada (1-3 unidades)."},
+      {"column": "unit_price", "description": "Precio unitario original al momento de la compra en COP."},
+      {"column": "discount_per_unit", "description": "Descuento por unidad aplicado por la promoción en COP. Es 0.00 si no hay descuento. line_total = qty × (unit_price - discount_per_unit) (calculable, no almacenado)."},
+      {"column": "promotion_id", "description": "Referencia a la promoción aplicada a este ítem (FK → promotions.promotion_id). Vacío si no se aplicó descuento en este ítem."},
+      {"column": "warranty_expires_at", "description": "Fecha de expiración de garantía en formato YYYY-MM-DD. Calculada: delivered_at + warranty_months. Vacío si no ha sido entregado."},
+      {"column": "return_deadline", "description": "Fecha límite para devolución en formato YYYY-MM-DD. Calculada: delivered_at + return_days. Vacío si no ha sido entregado o si return_days=0."},
+      {"column": "item_status", "description": "Estado del ítem: active, returned, refunded, replaced."}
+    ]
+  },
+  {
+    "table": "tracking",
+    "columns": [
+      {"column": "tracking_id", "description": "Identificador único del evento de tracking (PK)."},
+      {"column": "order_id", "description": "Referencia al pedido (FK → orders.order_id)."},
+      {"column": "item_id", "description": "Referencia al primer ítem del pedido (FK → order_items.item_id)."},
+      {"column": "timestamp", "description": "Fecha y hora del evento de tracking en formato YYYY-MM-DD HH:MM:SS."},
+      {"column": "status", "description": "Estado del evento: order_placed, payment_confirmed, preparing, ready_for_pickup, shipped, in_transit, out_for_delivery, delivered, cancelled."},
+      {"column": "location", "description": "Ubicación del paquete en el momento del evento. Vacío para estados iniciales."}
+    ]
+  },
+  {
+    "table": "shipments",
+    "columns": [
+      {"column": "shipment_id", "description": "Identificador único del envío (PK)."},
+      {"column": "order_id", "description": "Referencia al pedido (FK → orders.order_id)."},
+      {"column": "item_id", "description": "Referencia al ítem del envío (FK → order_items.item_id). Vacío si el envío cubre toda la orden."},
+      {"column": "carrier", "description": "Transportadora: Servientrega, Coordinadora, Interrapidísimo, Deprisa, TCC, Envía."},
+      {"column": "tracking_number", "description": "Número de guía de la transportadora (formato: XXX-NNNNN-NNNNN)."},
+      {"column": "tracking_url", "description": "URL para rastreo del envío en el sitio de la transportadora."},
+      {"column": "shipped_date", "description": "Fecha y hora de envío en formato YYYY-MM-DD HH:MM:SS."},
+      {"column": "estimated_delivery_date", "description": "Fecha estimada de entrega en formato YYYY-MM-DD."},
+      {"column": "actual_delivery_date", "description": "Fecha real de entrega en formato YYYY-MM-DD. Vacío si aún no ha sido entregado."},
+      {"column": "delivery_attempts", "description": "Número de intentos de entrega realizados (0-3)."},
+      {"column": "last_attempt_date", "description": "Fecha y hora del último intento de entrega. Vacío si delivery_attempts=0."},
+      {"column": "failed_delivery_reason", "description": "Razón del intento de entrega fallido. Solo presente cuando delivery_attempts > 1."},
+      {"column": "shipment_status", "description": "Estado del envío: shipped, in_transit, out_for_delivery, delivered, returned_to_sender, preparing."}
+    ]
+  },
+  {
+    "table": "cards",
+    "columns": [
+      {"column": "card_id", "description": "Identificador único de la tarjeta (PK)."},
+      {"column": "customer_id", "description": "Referencia al cliente (FK → customers.customer_id)."},
+      {"column": "bin", "description": "Primeros 6 dígitos de la tarjeta (BIN - Bank Identification Number)."},
+      {"column": "last_four", "description": "Últimos 4 dígitos de la tarjeta."},
+      {"column": "card_type", "description": "Tipo/red de la tarjeta: Visa, Mastercard, American Express, Diners Club."},
+      {"column": "bank", "description": "Banco emisor: Bancolombia, Davivienda, BBVA, Banco de Bogotá, Nequi, Nu, Scotiabank."},
+      {"column": "expiration_date", "description": "Fecha de expiración de la tarjeta en formato MM/YYYY."},
+      {"column": "is_primary", "description": "Indica si es la tarjeta principal del cliente (true/false)."}
+    ]
+  },
+  {
+    "table": "promotions",
+    "columns": [
+      {"column": "promotion_id", "description": "Identificador único de la promoción (PK)."},
+      {"column": "promotion_name", "description": "Nombre descriptivo de la promoción."},
+      {"column": "description", "description": "Descripción detallada de la promoción y sus condiciones."},
+      {"column": "promotion_type", "description": "Tipo de promoción: percentage (descuento porcentual), fixed_amount (monto fijo), buy_x_get_y (compra X lleva Y), free_shipping (envío gratis)."},
+      {"column": "discount_type", "description": "Tipo de descuento aplicado: percentage o fixed_amount."},
+      {"column": "discount_value", "description": "Valor del descuento. Si discount_type=percentage, es un porcentaje (5-100). Si discount_type=fixed_amount, es un monto en COP."},
+      {"column": "min_purchase_amount", "description": "Monto mínimo de compra en COP para aplicar la promoción. 0 si no hay mínimo."},
+      {"column": "max_discount_amount", "description": "Monto máximo de descuento en COP. Vacío si no hay tope."},
+      {"column": "buy_quantity", "description": "Cantidad que debe comprar el cliente (solo para tipo buy_x_get_y). Vacío para otros tipos."},
+      {"column": "get_quantity", "description": "Cantidad que recibe gratis o con descuento (solo para tipo buy_x_get_y). Vacío para otros tipos."},
+      {"column": "get_discount_percentage", "description": "Porcentaje de descuento en el producto gratuito/descontado (solo para buy_x_get_y: 50 o 100). Vacío para otros tipos."},
+      {"column": "start_date", "description": "Fecha de inicio de la promoción en formato YYYY-MM-DD."},
+      {"column": "end_date", "description": "Fecha de fin de la promoción en formato YYYY-MM-DD."},
+      {"column": "active", "description": "Indica si la promoción está activa (true/false). Basado en si end_date >= fecha actual."},
+      {"column": "max_uses_per_customer", "description": "Máximo de usos permitidos por cliente (1, 2, 3 o 5)."},
+      {"column": "max_total_uses", "description": "Máximo total de usos de la promoción. Vacío si no hay límite."},
+      {"column": "requires_premium", "description": "Indica si la promoción requiere que el cliente sea premium (true/false)."},
+      {"column": "applicable_product_ids", "description": "IDs de productos a los que aplica la promoción, separados por | (pipe). Ej: 5001|5003|5010. Vacío si aplica a todos. Referencia → products.product_id."},
+      {"column": "applicable_category_ids", "description": "IDs de categorías a las que aplica la promoción, separados por | (pipe). Ej: 1|3. Vacío si aplica a todas. Referencia → categories.category_id."},
+      {"column": "applicable_brand_ids", "description": "IDs de marcas a las que aplica la promoción, separados por | (pipe). Ej: 2|7. Vacío si aplica a todas. Referencia → brands.brand_id."},
+      {"column": "applicable_days", "description": "Días de la semana en los que aplica la promoción, separados por | (pipe). 0=Lunes, 6=Domingo. Ej: 4|5 (viernes y sábado). Vacío si aplica todos los días."},
+      {"column": "applicable_payment_methods", "description": "Métodos de pago con los que aplica la promoción, separados por | (pipe). Ej: nequi|daviplata. Vacío si aplica con cualquier método."},
+      {"column": "created_at", "description": "Fecha y hora de creación de la promoción en formato YYYY-MM-DD HH:MM:SS."}
+    ]
+  },
+  {
+    "table": "promotion_usage",
+    "columns": [
+      {"column": "usage_id", "description": "Identificador único del registro de uso (PK)."},
+      {"column": "promotion_id", "description": "Referencia a la promoción utilizada (FK → promotions.promotion_id)."},
+      {"column": "customer_id", "description": "Referencia al cliente que usó la promoción (FK → customers.customer_id)."},
+      {"column": "order_id", "description": "Referencia al pedido donde se usó la promoción (FK → orders.order_id)."},
+      {"column": "used_at", "description": "Fecha y hora en que se aplicó la promoción en formato YYYY-MM-DD HH:MM:SS."}
+    ]
+  },
+  {
+    "table": "support_tickets",
+    "columns": [
+      {"column": "ticket_id", "description": "Identificador único del ticket de soporte (PK)."},
+      {"column": "customer_id", "description": "Referencia al cliente que creó el ticket (FK → customers.customer_id)."},
+      {"column": "order_id", "description": "Referencia al pedido asociado (FK → orders.order_id). Vacío si el ticket no está asociado a un pedido específico."},
+      {"column": "subject", "description": "Asunto corto del ticket."},
+      {"column": "description", "description": "Descripción detallada del problema o consulta del cliente."},
+      {"column": "category", "description": "Categoría del ticket: reclamo, garantía, devolución, consulta."},
+      {"column": "status", "description": "Estado del ticket: open, in_progress, resolved, closed."},
+      {"column": "priority", "description": "Prioridad del ticket: low, medium, high, urgent."},
+      {"column": "created_at", "description": "Fecha y hora de creación del ticket en formato YYYY-MM-DD HH:MM:SS."},
+      {"column": "updated_at", "description": "Fecha y hora de la última actualización del ticket en formato YYYY-MM-DD HH:MM:SS."}
+    ]
+  }
+]
