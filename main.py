@@ -2,7 +2,7 @@ import sys
 import io
 import time
 
-from core.config import ATHENA_DB
+from core.config import DYNAMO_PREFIX
 from core.agent import create_agent
 from ui import console as ui
 
@@ -25,7 +25,7 @@ def main():
     agent = create_agent()
 
     ui.clear()
-    ui.banner(ATHENA_DB)
+    ui.banner(DYNAMO_PREFIX)
     ui.help_panel()
     ui.footer()
 
@@ -46,7 +46,7 @@ def main():
 
             if cmd in _CLEAR_CMDS:
                 ui.clear()
-                ui.banner(ATHENA_DB)
+                ui.banner(DYNAMO_PREFIX)
                 ui.footer()
                 continue
 
