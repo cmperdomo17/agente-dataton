@@ -8,11 +8,19 @@ en lugar de usar Athena que puede tardar varios segundos.
 
 import time
 from decimal import Decimal
+import re
+from typing import Optional
 
 import boto3
 from boto3.dynamodb.conditions import Key, Attr
 from strands import tool
+
 from core.config import AWS_REGION, ATHENA_MAX_ROWS
+from core.session_context import (
+    get_session_customer_id,
+    set_session_customer,
+    add_tool_trace,
+)
 
 DYNAMO_TABLE = "OmniRetailData"
 
@@ -33,6 +41,19 @@ def _fmt_value(v) -> str:
         return str(int(v)) if v == v.to_integral_value() else str(v)
     return "" if v is None else str(v)
 
+def _mask_value(v: str) -> str:
+    """Evita loguear PII cruda en tool_trace."""
+    if not v:
+        return ""
+    v = str(v).strip()
+    if v.isdigit() and len(v) >= 6:
+        return f"***{v[-4:]}(len={len(v)})"
+    if "@" in v:
+        # email parcial
+        parts = v.split("@", 1)
+        left = parts[0]
+        return (left[:2] + "***@" + parts[1]) if len(left) > 2 else "***@" + parts[1]
+    return v[:40]
 
 # Nombres de columnas traducidos a español para que el usuario los entienda
 _COL_LABELS = {
@@ -206,6 +227,28 @@ def _load_caches():
 
 _products_cache, _customers_cache = _load_caches()
 
+# ── Helpers de sesión / seguridad ─────────────────────────────────────
+
+def _require_session() -> Optional[str]:
+    cid = get_session_customer_id()
+    if not cid:
+        return None
+    return cid
+
+
+def _ownership_check(order_id: str, session_customer_id: str) -> dict | None:
+    """Devuelve meta del pedido si pertenece al cliente; si no, None."""
+    meta = _query_table(f"ORDER#{order_id.strip()}", "META", limit=1)
+    if not meta:
+        return None
+    if str(meta[0].get("customer_id", "")).strip() != str(session_customer_id).strip():
+        return None
+    return meta[0]
+
+
+def _identity_required_msg() -> str:
+    return "Para verificar tu identidad necesito tu número de cédula o celular."
+
 
 # ── Operaciones de consulta ────────────────────────────────────────────
 
@@ -231,41 +274,62 @@ def _buscar_producto(nombre: str) -> str:
     ]
     return _items_to_table(items, cols)
 
-
-def _buscar_cliente_dni(dni: str) -> str:
-    """Busca un cliente por su número de cédula."""
-    items = _query_gsi1(f"DNI#{dni.strip()}")
-    if not items:
-        return "Sin resultados (0 filas)."
-
-    customer_pk = items[0].get("pk", "")
-    profile = _query_table(customer_pk, "PROFILE")
-    emails = _query_table(customer_pk, "EMAIL#")
-
-    result_items = profile + emails
+def _info_promocion(promotion_id: str) -> str:
+    items = _query_table(f"PROMO#{promotion_id.strip()}", "PROFILE")
 
     cols = [
-        "entity", "customer_id", "dni", "name", "last_name1", "last_name2",
-        "phone", "account_status", "is_premium", "email", "email_type",
+        "promotion_id", "promotion_name", "promotion_type",
+        "discount_type", "discount_value", "min_purchase_amount",
+        "start_date", "end_date", "active", "requires_premium",
     ]
-    return _items_to_table(result_items, cols)
+    return _items_to_table(items, cols)
+
+
+def _productos_categoria(category_id: str) -> str:
+    items = _query_gsi1(f"CAT#{category_id.strip()}", limit=30)
+    cols = ["product_id", "name", "price", "brand_name", "available_qty", "active", "warranty_months"]
+    return _items_to_table(items, cols)
+
+
+def _buscar_cliente_dni(dni: str) -> str:
+    dni = dni.strip()
+    hits = _query_gsi1(f"DNI#{dni}")
+    if not hits:
+        return "No pude verificar tu identidad con ese número. ¿Podrías revisarlo e intentar de nuevo?"
+
+    # customer_pk = "CUSTOMER#<id>"
+    customer_pk = hits[0].get("pk", "")
+    customer_id = hits[0].get("customer_id")
+
+    if not customer_id and isinstance(customer_pk, str) and customer_pk.startswith("CUSTOMER#"):
+        customer_id = customer_pk.split("#", 1)[1]
+
+    if not customer_id:
+        return "No pude verificar tu identidad con ese número. ¿Podrías revisarlo e intentar de nuevo?"
+
+    # Seteo sesión (NO devolvemos datos del perfil aquí)
+    set_session_customer(str(customer_id))
+    return "Listo, identidad verificada. ¿En qué te puedo ayudar?"
 
 
 def _buscar_cliente_phone(phone: str) -> str:
-    """Busca un cliente por su número de teléfono en la caché local."""
-    import re
-    digits_only = re.sub(r'[^\d+]', '', phone.strip())
-    items = [
+    digits_only = re.sub(r"[^\d+]", "", phone.strip())
+    matches = [
         c for c in _customers_cache
-        if digits_only in re.sub(r'[^\d+]', '', c.get('phone', ''))
-        or phone.strip() in c.get('phone', '')
+        if digits_only in re.sub(r"[^\d+]", "", c.get("phone", ""))
+        or phone.strip() in c.get("phone", "")
     ]
+    if not matches:
+        return "No pude verificar tu identidad con ese número. ¿Podrías revisarlo e intentar de nuevo?"
 
-    cols = [
-        "customer_id", "dni", "name", "last_name1", "last_name2",
-        "phone", "account_status", "is_premium",
-    ]
-    return _items_to_table(items, cols)
+    # si hay múltiples matches, tomamos el primero (dataset controlado);
+    # si esto te preocupa, devolvemos “no pude verificar” y pedimos cédula.
+    customer_id = matches[0].get("customer_id")
+    if not customer_id:
+        return "No pude verificar tu identidad con ese número. ¿Podrías revisarlo e intentar de nuevo?"
+
+    set_session_customer(str(customer_id))
+    return "Listo, identidad verificada. ¿En qué te puedo ayudar?"
 
 
 def _buscar_cliente_nombre(nombre: str) -> str:
@@ -290,33 +354,90 @@ def _buscar_cliente_nombre(nombre: str) -> str:
     return _items_to_table(items, cols)
 
 
-def _pedidos_cliente(customer_id: str) -> str:
-    """Obtiene la lista de pedidos de un cliente."""
-    items = _query_table(f"CUSTOMER#{customer_id.strip()}", "ORDER#", limit=20)
-    # Los más recientes primero
-    items.sort(key=lambda x: x.get("sk", ""), reverse=True)
+# ── Operaciones sensibles (requieren sesión) ──────────────────────────
 
-    cols = [
-        "order_id", "order_date", "status", "total_amount", "payment_method",
-    ]
+def _pedidos_sesion(_: str = "") -> str:
+    cid = _require_session()
+    if not cid:
+        return _identity_required_msg()
+
+    items = _query_table(f"CUSTOMER#{cid}", "ORDER#", limit=20)
+    items.sort(key=lambda x: x.get("sk", ""), reverse=True)
+    cols = ["order_id", "order_date", "status", "total_amount", "payment_method"]
     return _items_to_table(items, cols)
 
 
-def _detalle_pedido(order_id: str) -> str:
-    """Obtiene toda la información de un pedido: resumen, productos, envíos y seguimiento."""
+def _perfil_sesion(_: str = "") -> str:
+    cid = _require_session()
+    if not cid:
+        return _identity_required_msg()
+
+    items = _query_table(f"CUSTOMER#{cid}", limit=50)
+
+    profile = [i for i in items if i.get("sk") == "PROFILE"]
+    emails = [i for i in items if i.get("entity") == "email"]
+    addresses = [i for i in items if i.get("entity") == "address"]
+    cards = [i for i in items if i.get("entity") == "card"]
+
+    parts = []
+
+    if profile:
+        parts.append("CLIENTE:")
+        parts.append(_items_to_table(profile, [
+            "customer_id", "dni", "name", "last_name1", "last_name2",
+            "phone", "birthday", "account_status", "is_premium", "registration_date",
+        ]))
+
+    if emails:
+        parts.append("\nEMAILS:")
+        parts.append(_items_to_table(emails, ["email", "email_type", "is_primary", "is_verified"]))
+
+    if addresses:
+        parts.append("\nDIRECCIONES:")
+        parts.append(_items_to_table(addresses, ["address_id", "address_line1", "city", "department", "address_type", "is_default"]))
+
+    if cards:
+        parts.append("\nTARJETAS:")
+        parts.append(_items_to_table(cards, ["card_id", "card_type", "bank", "last_four", "is_primary"]))
+
+    if not parts:
+        return "Sin resultados (0 filas)."
+
+    return "\n".join(parts)
+
+
+def _tickets_sesion(_: str = "") -> str:
+    cid = _require_session()
+    if not cid:
+        return _identity_required_msg()
+
+    items = _query_table(f"CUSTOMER#{cid}", "TICKET#")
+    cols = ["ticket_id", "order_id", "subject", "category", "status", "priority", "created_at"]
+    return _items_to_table(items, cols)
+
+
+def _detalle_pedido_sesion(order_id: str) -> str:
+    cid = _require_session()
+    if not cid:
+        return _identity_required_msg()
+
+    meta = _ownership_check(order_id, cid)
+    if meta is None:
+        # No revelamos si existe o no; mensaje estándar
+        return "Ese pedido no pertenece a tu cuenta."
+
     items = _query_table(f"ORDER#{order_id.strip()}", limit=100)
 
-    meta = [i for i in items if i.get("sk") == "META"]
+    meta_items = [i for i in items if i.get("sk") == "META"]
     order_items = [i for i in items if i.get("entity") == "order_item"]
     shipments = [i for i in items if i.get("entity") == "shipment"]
     tracking = [i for i in items if i.get("entity") == "tracking"]
 
     parts = []
 
-    if meta:
-        m = meta[0]
+    if meta_items:
         parts.append("PEDIDO:")
-        parts.append(_items_to_table(meta, [
+        parts.append(_items_to_table(meta_items, [
             "order_id", "customer_id", "status", "order_date", "total_amount",
             "subtotal", "shipping_cost", "tax", "total_discount_amount",
             "payment_method", "delivery_method",
@@ -341,9 +462,7 @@ def _detalle_pedido(order_id: str) -> str:
     if tracking:
         tracking.sort(key=lambda x: x.get("timestamp", ""), reverse=True)
         parts.append("\nTRACKING:")
-        parts.append(_items_to_table(tracking[:10], [
-            "timestamp", "status", "location",
-        ]))
+        parts.append(_items_to_table(tracking[:10], ["timestamp", "status", "location"]))
 
     if not parts:
         return "Sin resultados (0 filas)."
@@ -351,22 +470,22 @@ def _detalle_pedido(order_id: str) -> str:
     return "\n".join(parts)
 
 
-def _direccion_pedido(order_id: str) -> str:
-    """Obtiene la dirección de entrega asociada a un pedido."""
-    meta = _query_table(f"ORDER#{order_id.strip()}", "META")
-    if not meta:
-        return "No se encontró el pedido."
+def _direccion_pedido_sesion(order_id: str) -> str:
+    cid = _require_session()
+    if not cid:
+        return _identity_required_msg()
 
-    customer_id = meta[0].get("customer_id")
-    address_id = meta[0].get("address_id")
+    meta = _ownership_check(order_id, cid)
+    if meta is None:
+        return "Ese pedido no pertenece a tu cuenta."
 
-    if not customer_id or not address_id:
+    address_id = meta.get("address_id")
+    if not address_id:
         return "El pedido no tiene dirección de entrega asociada."
 
-    items = _query_table(f"CUSTOMER#{customer_id}", f"ADDR#{address_id}")
+    items = _query_table(f"CUSTOMER#{cid}", f"ADDR#{address_id}")
     if not items:
-        # Si no encuentra la dirección exacta, trae todas las del cliente
-        items = _query_table(f"CUSTOMER#{customer_id}", "ADDR#")
+        items = _query_table(f"CUSTOMER#{cid}", "ADDR#")
 
     cols = [
         "address_line1", "address_line2", "city", "department",
@@ -374,18 +493,6 @@ def _direccion_pedido(order_id: str) -> str:
         "address_type", "is_default",
     ]
     return _items_to_table(items, cols)
-
-
-def _buscar_tickets(customer_id: str) -> str:
-    """Obtiene los tickets de soporte de un cliente."""
-    items = _query_table(f"CUSTOMER#{customer_id.strip()}", "TICKET#")
-
-    cols = [
-        "ticket_id", "order_id", "subject", "category",
-        "status", "priority", "created_at",
-    ]
-    return _items_to_table(items, cols)
-
 
 def _info_promocion(promotion_id: str) -> str:
     """Obtiene los datos de una promoción."""
@@ -458,15 +565,17 @@ _OPERATIONS = {
     "CLIENTE_DNI":       _buscar_cliente_dni,
     "CLIENTE_PHONE":     _buscar_cliente_phone,
     "CLIENTE_NOMBRE":    _buscar_cliente_nombre,
-    "PEDIDOS":           _pedidos_cliente,
-    "DETALLE_PEDIDO":    _detalle_pedido,
-    "DIRECCION_PEDIDO":  _direccion_pedido,
+    "PEDIDOS":           _pedidos_sesion,
+    "PERFIL_CLIENTE":    _perfil_sesion,
+    "DETALLE_PEDIDO":    _detalle_pedido_sesion,
+    "DIRECCION_PEDIDO":  _direccion_pedido_sesion,
     "PERFIL_CLIENTE":    _perfil_completo_cliente,
-    "TICKETS":           _buscar_tickets,
+    "TICKETS":           _tickets_sesion,
     "PROMOCION":         _info_promocion,
     "PRODUCTOS_CAT":     _productos_categoria,
 }
 
+_NO_ARG_OPS = {"PEDIDOS", "PERFIL_CLIENTE", "TICKETS"}
 
 # ── Herramienta principal que usa el agente ──────────────────────────
 
@@ -480,15 +589,21 @@ def consultar_dynamo(operacion: str) -> str:
     """
     start = time.time()
 
-    if ":" not in operacion:
-        return f"❌ Formato inválido. Use OPERACION:valor. Operaciones: {', '.join(_OPERATIONS.keys())}"
+    raw = (operacion or "").strip()
+    if not raw:
+        return "❌ Operación vacía."
 
-    op_name, _, value = operacion.partition(":")
-    op_name = op_name.strip().upper()
-    value = value.strip()
-
-    if not value:
-        return "❌ El valor no puede estar vacío."
+    if ":" in raw:
+        op_name, _, value = raw.partition(":")
+        op_name = op_name.strip().upper()
+        value = value.strip()
+        if not value:
+            return "❌ El valor no puede estar vacío."
+    else:
+        op_name = raw.upper()
+        value = ""
+        if op_name not in _NO_ARG_OPS:
+            return f"❌ Formato inválido. Use OPERACION:valor. Operaciones: {', '.join(_OPERATIONS.keys())}"
 
     handler = _OPERATIONS.get(op_name)
     if not handler:
@@ -496,7 +611,20 @@ def consultar_dynamo(operacion: str) -> str:
 
     try:
         result = handler(value)
-        elapsed_ms = (time.time() - start) * 1000
-        return f"{result}\n\n[DynamoDB: {elapsed_ms:.0f}ms]"
+        elapsed_ms = int((time.time() - start) * 1000)
+
+        # tool_trace (sin PII cruda)
+        add_tool_trace(
+            "consultar_dynamo",
+            {"operacion": op_name, "value_masked": _mask_value(value)},
+            {"elapsed_ms": elapsed_ms, "result_len": len(result)},
+        )
+        return result
+
     except Exception as e:
+        add_tool_trace(
+            "consultar_dynamo",
+            {"operacion": op_name, "value_masked": _mask_value(value)},
+            {"error": str(e)},
+        )
         return f"Error en consulta DynamoDB: {str(e)}"

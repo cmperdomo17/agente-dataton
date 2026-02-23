@@ -2,7 +2,7 @@ import os
 from datetime import datetime
 
 # --- AWS ---
-AWS_PROFILE = "Mario"
+#AWS_PROFILE = "Mario"
 AWS_REGION = "us-east-2"
 
 # --- Athena ---
@@ -25,4 +25,7 @@ SCHEMA_PATH = os.path.join(os.path.dirname(__file__), "data_dictionary.json")
 # --- Fecha actual del sistema ---
 CURRENT_DATE = datetime.now().strftime("%Y-%m-%d")
 
-os.environ["AWS_PROFILE"] = AWS_PROFILE
+#os.environ["AWS_PROFILE"] = AWS_PROFILE
+
+# Agent
+AGENT_STREAMING = os.getenv("AGENT_STREAMING", "true").lower() == "true"
