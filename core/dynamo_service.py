@@ -203,7 +203,7 @@ _promotions_cache: list = []
 _product_map: dict = {}
 
 
-def _ensure_caches():
+def ensure_caches():
     """Carga los catálogos en memoria la primera vez que se necesitan.
 
     Usa un lock para evitar cargas duplicadas en entornos multi-hilo.
@@ -287,7 +287,7 @@ def _ensure_caches():
 
 def _buscar_producto(nombre: str) -> str:
     """Busca productos cuyo nombre contenga todos los términos indicados."""
-    _ensure_caches()
+    ensure_caches()
     term = _normalize(nombre)
     tokens = term.split()
     # Primero intenta coincidencia con todos los tokens
@@ -306,7 +306,7 @@ def _buscar_producto(nombre: str) -> str:
 
 def _buscar_cliente_dni(dni: str) -> str:
     """Busca un cliente por número de documento (cédula)."""
-    _ensure_caches()
+    ensure_caches()
     d = dni.strip()
     items = [c for c in _customers_cache if str(c.get("dni", "")) == d]
     cols = [
@@ -318,7 +318,7 @@ def _buscar_cliente_dni(dni: str) -> str:
 
 def _buscar_cliente_phone(phone: str) -> str:
     """Busca un cliente por número de celular (coincidencia parcial de dígitos)."""
-    _ensure_caches()
+    ensure_caches()
     digits = re.sub(r"[^\d+]", "", phone.strip())
     items = [
         c for c in _customers_cache
@@ -334,7 +334,7 @@ def _buscar_cliente_phone(phone: str) -> str:
 
 def _buscar_cliente_nombre(nombre: str) -> str:
     """Busca clientes cuyo nombre completo contenga todos los términos."""
-    _ensure_caches()
+    ensure_caches()
     term = _normalize(nombre)
     tokens = term.split()
     items = [c for c in _customers_cache if all(t in c.get("name_normalized", "") for t in tokens)]
@@ -411,7 +411,7 @@ def _detalle_pedido(order_id: str) -> str:
     order = resp.get("Item")
 
     # Ítems del pedido, enriquecidos con datos del producto desde caché
-    _ensure_caches()
+    ensure_caches()
     resp = _tbl("order_items").query(KeyConditionExpression=Key("order_id").eq(oid))
     items = resp.get("Items", [])
     for it in items:
@@ -497,7 +497,7 @@ def _info_promocion(promotion_id: str) -> str:
     if not item:
         return "Sin resultados (0 filas)."
     # Enriquecer con nombres de categorías desde caché
-    _ensure_caches()
+    ensure_caches()
     cats = str(item.get("applicable_category_ids", ""))
     if cats:
         names = [_cats_cache.get(c.strip(), c.strip()) for c in cats.split("|") if c.strip()]
@@ -513,7 +513,7 @@ def _info_promocion(promotion_id: str) -> str:
 
 def _promos_activas(_value: str) -> str:
     """Lista todas las promociones marcadas como activas."""
-    _ensure_caches()
+    ensure_caches()
     activas = [p for p in _promotions_cache if str(p.get("active", "")).lower() == "true"]
     cols = [
         "promotion_id", "promotion_name", "discount_type", "discount_value",
@@ -525,7 +525,7 @@ def _promos_activas(_value: str) -> str:
 
 def _promos_producto(product_id: str) -> str:
     """Encuentra promociones activas aplicables a un producto (por ID o categoría)."""
-    _ensure_caches()
+    ensure_caches()
     pid = product_id.strip()
     prod = _product_map.get(pid)
     if not prod:
@@ -556,7 +556,7 @@ def _promos_producto(product_id: str) -> str:
 def _productos_categoria(category_id: str) -> str:
     """Lista productos de una categoría usando el GSI category-index."""
     cid = int(category_id.strip())
-    _ensure_caches()
+    ensure_caches()
     resp = _tbl("products").query(
         IndexName="category-index",
         KeyConditionExpression=Key("category_id").eq(cid),
@@ -577,7 +577,7 @@ def _productos_categoria(category_id: str) -> str:
 
 def _consultar_stock(product_id: str) -> str:
     """Muestra el stock detallado de un producto específico."""
-    _ensure_caches()
+    ensure_caches()
     pid = product_id.strip()
     prod = _product_map.get(pid)
     if not prod:

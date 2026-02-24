@@ -12,6 +12,7 @@ import logging
 
 from core.config import DYNAMO_PREFIX
 from core.agent import create_agent
+from core.dynamo_service import ensure_caches
 from ui import console as ui
 
 logger = logging.getLogger(__name__)
@@ -40,6 +41,7 @@ def _invoke_agent(agent, query: str):
 def main():
     """Loop principal del agente: lee preguntas del usuario y muestra respuestas."""
     agent = create_agent()
+    ensure_caches()
 
     ui.clear()
     ui.banner(DYNAMO_PREFIX)

@@ -42,6 +42,10 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 
+# Silenciar librerías externas ruidosas (botocore, strands, urllib3)
+for _noisy_lib in ("botocore", "boto3", "urllib3", "strands"):
+    logging.getLogger(_noisy_lib).setLevel(logging.WARNING)
+
 # Configurar perfil AWS para boto3 (solo si no viene por otro mecanismo)
 if AWS_PROFILE and "AWS_PROFILE" not in os.environ:
     os.environ["AWS_PROFILE"] = AWS_PROFILE
