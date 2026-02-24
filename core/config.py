@@ -31,6 +31,11 @@ MODEL_TEMPERATURE = float(os.getenv("MODEL_TEMPERATURE", "0.0"))
 # --- Rutas ---
 SCHEMA_PATH = os.path.join(os.path.dirname(__file__), "data_dictionary.json")
 
+# --- S3 Políticas ---
+POLICY_S3_BUCKET = os.getenv("POLICY_S3_BUCKET", "omniretail-policies")
+POLICY_S3_PREFIX = os.getenv("POLICY_S3_PREFIX", "politicas/")
+POLICY_LOCAL_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "politicas")
+
 # --- Fecha actual (se evalúa al arrancar la app) ---
 CURRENT_DATE = datetime.now().strftime("%Y-%m-%d")
 

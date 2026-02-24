@@ -10,6 +10,7 @@ from strands.models import BedrockModel
 
 from core.config import MODEL_ID, MODEL_TEMPERATURE
 from core.dynamo_service import consultar_dynamo
+from core.policy_service import consultar_politica
 from core.prompt import build_system_prompt
 
 logger = logging.getLogger(__name__)
@@ -28,7 +29,7 @@ def create_agent() -> Agent:
     logger.info("Agente creado con modelo=%s", MODEL_ID)
 
     return Agent(
-        tools=[consultar_dynamo],
+        tools=[consultar_dynamo, consultar_politica],
         model=model,
         system_prompt=prompt,
     )
