@@ -1,63 +1,66 @@
 """
-Servicio de consultas rápidas a DynamoDB para el agente OmniRetail.
+Servicio de consultas a DynamoDB para el agente OmniRetail.
 
-Utiliza 13 tablas independientes (prefijo omniretail_) con PK/SK y GSIs
-optimizados para los patrones de acceso del agente.
+Arquitectura:
+  - Caché en memoria de tablas pequeñas (categorías, marcas, productos, clientes, promos).
+  - Carga lazy: los datos se traen de DynamoDB la primera vez que se necesitan.
+  - Una sola herramienta expuesta al agente: consultar_dynamo("OP:valor").
 
-Tablas:
-  omniretail_customers          PK=customer_id        GSIs: phone-index, dni-index
-  omniretail_customer_emails    PK=customer_id SK=email_id    GSI: email-index
-  omniretail_addresses          PK=customer_id SK=address_id
-  omniretail_cards              PK=customer_id SK=card_id
-  omniretail_categories         PK=category_id
-  omniretail_brands             PK=brand_id
-  omniretail_products           PK=product_id         GSIs: category-index, brand-index
-  omniretail_stock              PK=product_id
-  omniretail_orders             PK=order_id           GSIs: customer-orders-index, status-index
-  omniretail_order_items        PK=order_id SK=item_id GSI: product-items-index
-  omniretail_tracking           PK=order_id SK=tracking_id
-  omniretail_shipments          PK=order_id SK=shipment_id
-  omniretail_promotions         PK=promotion_id       GSI: active-promos-index
+Tablas (prefijo omniretail_):
+  customers, customer_emails, addresses, cards, categories, brands,
+  products, stock, orders, order_items, tracking, shipments, promotions.
 """
 
 import re
 import time
+import logging
+import threading
 from decimal import Decimal
 
 import boto3
+from botocore.config import Config as BotoConfig
 from boto3.dynamodb.conditions import Key
 from strands import tool
 from core.config import AWS_REGION, DYNAMO_PREFIX, MAX_ROWS
 
-# ── Conexión y acceso a tablas ─────────────────────────────────────────
+logger = logging.getLogger(__name__)
 
-_dynamodb = boto3.resource("dynamodb", region_name=AWS_REGION)
-_table_refs = {}
+# ── Conexión DynamoDB ──────────────────────────────────────────────────
+
+_boto_cfg = BotoConfig(
+    retries={"max_attempts": 3, "mode": "adaptive"},
+    connect_timeout=5,
+    read_timeout=10,
+)
+_dynamodb = boto3.resource("dynamodb", region_name=AWS_REGION, config=_boto_cfg)
+_table_refs: dict = {}
 
 
 def _tbl(name: str):
-    """Obtiene referencia lazy a una tabla DynamoDB."""
+    """Obtiene referencia lazy a una tabla DynamoDB (se cachea en memoria)."""
     if name not in _table_refs:
         _table_refs[name] = _dynamodb.Table(f"{DYNAMO_PREFIX}{name}")
     return _table_refs[name]
 
 
-# ── Funciones auxiliares ───────────────────────────────────────────────
+# ── Utilidades de formato ──────────────────────────────────────────────
+
+_ACCENT_MAP = str.maketrans("áéíóúüñÁÉÍÓÚÜÑ", "aeiouunAEIOUUN")
+
 
 def _normalize(text: str) -> str:
-    """Minúsculas sin tildes para búsquedas fuzzy."""
-    trans = str.maketrans("áéíóúüñÁÉÍÓÚÜÑ", "aeiouunAEIOUUN")
-    return text.lower().translate(trans).strip()
+    """Convierte a minúsculas sin tildes para búsquedas tolerantes a errores."""
+    return text.lower().translate(_ACCENT_MAP).strip()
 
 
 def _fmt(v) -> str:
-    """Formatea un valor DynamoDB (Decimal → str legible)."""
+    """Formatea valores de DynamoDB: Decimal → entero o decimal legible."""
     if isinstance(v, Decimal):
         return str(int(v)) if v == v.to_integral_value() else str(v)
     return "" if v is None else str(v)
 
 
-# Nombres de columnas → español para el usuario
+# Traducción de columnas técnicas → español para el usuario
 _COL_LABELS = {
     "customer_id": "id_cliente", "product_id": "id_producto",
     "order_id": "id_pedido", "order_date": "fecha_pedido",
@@ -125,7 +128,7 @@ _COL_LABELS = {
     "last_updated": "ultima_actualizacion",
 }
 
-# Valores del sistema → español
+# Traducción de valores del sistema → español natural
 _VAL_TR = {
     "true": "Sí", "false": "No",
     "active": "Activo", "inactive": "Inactivo", "suspended": "Suspendido",
@@ -153,7 +156,7 @@ _VAL_TR = {
 
 
 def _tr(v):
-    """Traduce un valor de sistema a español."""
+    """Traduce un valor del sistema a su equivalente en español."""
     if not isinstance(v, str):
         return v
     s = str(v).strip()
@@ -161,7 +164,7 @@ def _tr(v):
 
 
 def _to_table(items: list[dict], columns: list[str]) -> str:
-    """Formatea ítems como tabla texto pipe-separated para el agente."""
+    """Formatea una lista de ítems como tabla texto (pipe-separated) para el agente."""
     if not items:
         return "Sin resultados (0 filas)."
     headers = [_COL_LABELS.get(c, c) for c in columns]
@@ -171,10 +174,10 @@ def _to_table(items: list[dict], columns: list[str]) -> str:
     return "\n".join(lines)
 
 
-# ── Scan completo (para cachés pequeñas) ──────────────────────────────
+# ── Scan completo (para tablas pequeñas) ───────────────────────────────
 
 def _scan_all(table_name: str) -> list[dict]:
-    """Recorre toda una tabla DynamoDB."""
+    """Recorre toda una tabla DynamoDB paginando automáticamente."""
     table = _tbl(table_name)
     items, kwargs = [], {}
     while True:
@@ -183,62 +186,113 @@ def _scan_all(table_name: str) -> list[dict]:
         if "LastEvaluatedKey" not in resp:
             break
         kwargs["ExclusiveStartKey"] = resp["LastEvaluatedKey"]
+    logger.debug("Scan %s: %d items", table_name, len(items))
     return items
 
 
-# ── Cachés en memoria (se cargan una vez al iniciar) ──────────────────
+# ── Caché lazy (se carga una sola vez, con thread-safety) ──────────────
 
-def _load_caches():
-    """Carga catálogos, productos (con stock), clientes y promociones."""
-    # Catálogos pequeños
-    cats = {str(int(c["category_id"])): c.get("name", "") for c in _scan_all("categories")}
-    brnds = {str(int(b["brand_id"])): b.get("name", "") for b in _scan_all("brands")}
-    stock_map = {str(int(s["product_id"])): s for s in _scan_all("stock")}
+_cache_lock = threading.Lock()
+_cache_loaded = False
 
-    # Productos enriquecidos con stock + categoría + marca
-    products = _scan_all("products")
-    for p in products:
-        pid = str(int(p.get("product_id", 0)))
-        p["category_name"] = cats.get(str(int(p.get("category_id", 0))), "")
-        p["brand_name"] = brnds.get(str(int(p.get("brand_id", 0))), "")
-        st = stock_map.get(pid, {})
-        p["stock_qty"] = st.get("stock_qty", 0)
-        p["reserved_qty"] = st.get("reserved_qty", 0)
+_cats_cache: dict = {}
+_brands_cache: dict = {}
+_products_cache: list = []
+_customers_cache: list = []
+_promotions_cache: list = []
+_product_map: dict = {}
+
+
+def _ensure_caches():
+    """Carga los catálogos en memoria la primera vez que se necesitan.
+
+    Usa un lock para evitar cargas duplicadas en entornos multi-hilo.
+    Si DynamoDB falla, se registra el error y se re-lanza la excepción.
+    """
+    global _cache_loaded, _cats_cache, _brands_cache
+    global _products_cache, _customers_cache, _promotions_cache, _product_map
+
+    if _cache_loaded:
+        return
+
+    with _cache_lock:
+        if _cache_loaded:  # Double-check dentro del lock
+            return
+
+        logger.info("Cargando catálogos desde DynamoDB...")
+        start = time.time()
+
         try:
-            p["available_qty"] = int(p["stock_qty"]) - int(p["reserved_qty"])
-        except (ValueError, TypeError):
-            p["available_qty"] = 0
-        p["warehouse_location"] = st.get("warehouse_location", "")
-        p["restock_date"] = st.get("restock_date", "")
-        p["name_normalized"] = _normalize(p.get("name", ""))
+            # Catálogos pequeños
+            _cats_cache = {
+                str(int(c["category_id"])): c.get("name", "")
+                for c in _scan_all("categories")
+            }
+            _brands_cache = {
+                str(int(b["brand_id"])): b.get("name", "")
+                for b in _scan_all("brands")
+            }
+            stock_map = {
+                str(int(s["product_id"])): s
+                for s in _scan_all("stock")
+            }
 
-    # Clientes
-    customers = _scan_all("customers")
-    for c in customers:
-        full = f"{c.get('name', '')} {c.get('last_name1', '')} {c.get('last_name2', '')}".strip()
-        c["name_normalized"] = _normalize(full)
+            # Productos enriquecidos con stock, categoría y marca
+            _products_cache = _scan_all("products")
+            for p in _products_cache:
+                pid = str(int(p.get("product_id", 0)))
+                p["category_name"] = _cats_cache.get(str(int(p.get("category_id", 0))), "")
+                p["brand_name"] = _brands_cache.get(str(int(p.get("brand_id", 0))), "")
+                st = stock_map.get(pid, {})
+                p["stock_qty"] = st.get("stock_qty", 0)
+                p["reserved_qty"] = st.get("reserved_qty", 0)
+                try:
+                    p["available_qty"] = int(p["stock_qty"]) - int(p["reserved_qty"])
+                except (ValueError, TypeError):
+                    p["available_qty"] = 0
+                p["warehouse_location"] = st.get("warehouse_location", "")
+                p["restock_date"] = st.get("restock_date", "")
+                p["name_normalized"] = _normalize(p.get("name", ""))
 
-    # Promociones
-    promos = _scan_all("promotions")
+            # Clientes con nombre normalizado para búsquedas
+            _customers_cache = _scan_all("customers")
+            for c in _customers_cache:
+                full = f"{c.get('name', '')} {c.get('last_name1', '')} {c.get('last_name2', '')}".strip()
+                c["name_normalized"] = _normalize(full)
 
-    return cats, brnds, products, customers, promos
+            # Promociones
+            _promotions_cache = _scan_all("promotions")
 
+            # Mapa rápido product_id → producto enriquecido
+            _product_map = {
+                str(int(p["product_id"])): p
+                for p in _products_cache if "product_id" in p
+            }
 
-_cats_cache, _brands_cache, _products_cache, _customers_cache, _promotions_cache = _load_caches()
-
-# Mapa product_id → producto enriquecido (para detalles de pedidos y promos)
-_product_map = {str(int(p["product_id"])): p for p in _products_cache if "product_id" in p}
+            _cache_loaded = True
+            elapsed = time.time() - start
+            logger.info(
+                "Catálogos cargados: %d productos, %d clientes, %d promos (%.1fs)",
+                len(_products_cache), len(_customers_cache),
+                len(_promotions_cache), elapsed,
+            )
+        except Exception:
+            logger.exception("Error cargando catálogos desde DynamoDB")
+            raise
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# OPERACIONES
+# OPERACIONES DE CONSULTA
 # ══════════════════════════════════════════════════════════════════════════
 
 def _buscar_producto(nombre: str) -> str:
-    """Busca productos por nombre en la caché local."""
+    """Busca productos cuyo nombre contenga todos los términos indicados."""
+    _ensure_caches()
     term = _normalize(nombre)
     tokens = term.split()
+    # Primero intenta coincidencia con todos los tokens
     items = [p for p in _products_cache if all(t in p.get("name_normalized", "") for t in tokens)]
+    # Si no hay resultados y hay múltiples tokens, relaja la búsqueda
     if not items and len(tokens) > 1:
         items = [p for p in _products_cache if any(t in p.get("name_normalized", "") for t in tokens)]
     cols = [
@@ -251,7 +305,8 @@ def _buscar_producto(nombre: str) -> str:
 
 
 def _buscar_cliente_dni(dni: str) -> str:
-    """Busca un cliente por DNI en la caché (500 registros, instantáneo)."""
+    """Busca un cliente por número de documento (cédula)."""
+    _ensure_caches()
     d = dni.strip()
     items = [c for c in _customers_cache if str(c.get("dni", "")) == d]
     cols = [
@@ -262,7 +317,8 @@ def _buscar_cliente_dni(dni: str) -> str:
 
 
 def _buscar_cliente_phone(phone: str) -> str:
-    """Busca un cliente por teléfono en la caché."""
+    """Busca un cliente por número de celular (coincidencia parcial de dígitos)."""
+    _ensure_caches()
     digits = re.sub(r"[^\d+]", "", phone.strip())
     items = [
         c for c in _customers_cache
@@ -277,10 +333,12 @@ def _buscar_cliente_phone(phone: str) -> str:
 
 
 def _buscar_cliente_nombre(nombre: str) -> str:
-    """Busca un cliente por nombre en la caché."""
+    """Busca clientes cuyo nombre completo contenga todos los términos."""
+    _ensure_caches()
     term = _normalize(nombre)
     tokens = term.split()
     items = [c for c in _customers_cache if all(t in c.get("name_normalized", "") for t in tokens)]
+    # Relajar: aceptar si coinciden N-1 de N tokens
     if not items and len(tokens) > 1:
         items = [
             c for c in _customers_cache
@@ -294,22 +352,18 @@ def _buscar_cliente_nombre(nombre: str) -> str:
 
 
 def _perfil_completo_cliente(customer_id: str) -> str:
-    """Perfil completo: datos personales, emails, direcciones, tarjetas."""
+    """Obtiene el perfil completo: datos personales, emails, direcciones y tarjetas."""
     cid = int(customer_id.strip())
 
-    # Datos del cliente
     resp = _tbl("customers").get_item(Key={"customer_id": cid})
     profile = [resp["Item"]] if "Item" in resp else []
 
-    # Emails
     resp = _tbl("customer_emails").query(KeyConditionExpression=Key("customer_id").eq(cid))
     emails = resp.get("Items", [])
 
-    # Direcciones
     resp = _tbl("addresses").query(KeyConditionExpression=Key("customer_id").eq(cid))
     addresses = resp.get("Items", [])
 
-    # Tarjetas
     resp = _tbl("cards").query(KeyConditionExpression=Key("customer_id").eq(cid))
     cards = resp.get("Items", [])
 
@@ -336,7 +390,7 @@ def _perfil_completo_cliente(customer_id: str) -> str:
 
 
 def _pedidos_cliente(customer_id: str) -> str:
-    """Pedidos de un cliente, ordenados por fecha descendente."""
+    """Lista los pedidos de un cliente, ordenados por fecha más reciente."""
     cid = int(customer_id.strip())
     resp = _tbl("orders").query(
         IndexName="customer-orders-index",
@@ -350,17 +404,16 @@ def _pedidos_cliente(customer_id: str) -> str:
 
 
 def _detalle_pedido(order_id: str) -> str:
-    """Detalle completo: resumen del pedido, ítems, envíos y tracking."""
+    """Detalle completo de un pedido: resumen, ítems con producto, envíos y tracking."""
     oid = int(order_id.strip())
 
-    # Pedido
     resp = _tbl("orders").get_item(Key={"order_id": oid})
     order = resp.get("Item")
 
-    # Ítems del pedido
+    # Ítems del pedido, enriquecidos con datos del producto desde caché
+    _ensure_caches()
     resp = _tbl("order_items").query(KeyConditionExpression=Key("order_id").eq(oid))
     items = resp.get("Items", [])
-    # Enriquecer con datos del producto desde caché
     for it in items:
         pid = str(int(it.get("product_id", 0)))
         prod = _product_map.get(pid, {})
@@ -369,11 +422,9 @@ def _detalle_pedido(order_id: str) -> str:
         it["return_days"] = prod.get("return_days", "")
         it["is_final_sale"] = prod.get("is_final_sale", "")
 
-    # Envíos
     resp = _tbl("shipments").query(KeyConditionExpression=Key("order_id").eq(oid))
     shipments = resp.get("Items", [])
 
-    # Tracking
     resp = _tbl("tracking").query(KeyConditionExpression=Key("order_id").eq(oid))
     tracking = resp.get("Items", [])
 
@@ -408,7 +459,7 @@ def _detalle_pedido(order_id: str) -> str:
 
 
 def _direccion_pedido(order_id: str) -> str:
-    """Dirección de entrega asociada a un pedido."""
+    """Obtiene la dirección de entrega asociada a un pedido."""
     oid = int(order_id.strip())
     resp = _tbl("orders").get_item(Key={"order_id": oid})
     order = resp.get("Item")
@@ -421,7 +472,6 @@ def _direccion_pedido(order_id: str) -> str:
         return "El pedido no tiene dirección de entrega asociada."
 
     cid, aid = int(cid), int(aid)
-    # Buscar dirección exacta
     resp = _tbl("addresses").query(
         KeyConditionExpression=Key("customer_id").eq(cid) & Key("address_id").eq(aid),
     )
@@ -440,13 +490,14 @@ def _direccion_pedido(order_id: str) -> str:
 
 
 def _info_promocion(promotion_id: str) -> str:
-    """Detalle de una promoción por ID."""
+    """Obtiene los detalles de una promoción por su ID."""
     pid = int(promotion_id.strip())
     resp = _tbl("promotions").get_item(Key={"promotion_id": pid})
     item = resp.get("Item")
     if not item:
         return "Sin resultados (0 filas)."
-    # Enriquecer con nombres de categorías
+    # Enriquecer con nombres de categorías desde caché
+    _ensure_caches()
     cats = str(item.get("applicable_category_ids", ""))
     if cats:
         names = [_cats_cache.get(c.strip(), c.strip()) for c in cats.split("|") if c.strip()]
@@ -460,8 +511,9 @@ def _info_promocion(promotion_id: str) -> str:
     return _to_table([item], cols)
 
 
-def _promos_activas(_: str) -> str:
-    """Lista todas las promociones activas."""
+def _promos_activas(_value: str) -> str:
+    """Lista todas las promociones marcadas como activas."""
+    _ensure_caches()
     activas = [p for p in _promotions_cache if str(p.get("active", "")).lower() == "true"]
     cols = [
         "promotion_id", "promotion_name", "discount_type", "discount_value",
@@ -472,7 +524,8 @@ def _promos_activas(_: str) -> str:
 
 
 def _promos_producto(product_id: str) -> str:
-    """Encuentra promociones activas que aplican a un producto (por ID o categoría)."""
+    """Encuentra promociones activas aplicables a un producto (por ID o categoría)."""
+    _ensure_caches()
     pid = product_id.strip()
     prod = _product_map.get(pid)
     if not prod:
@@ -501,15 +554,15 @@ def _promos_producto(product_id: str) -> str:
 
 
 def _productos_categoria(category_id: str) -> str:
-    """Productos de una categoría (usa GSI category-index)."""
+    """Lista productos de una categoría usando el GSI category-index."""
     cid = int(category_id.strip())
+    _ensure_caches()
     resp = _tbl("products").query(
         IndexName="category-index",
         KeyConditionExpression=Key("category_id").eq(cid),
         Limit=30,
     )
     items = resp.get("Items", [])
-    # Enriquecer con stock y marca desde caché
     for p in items:
         pid = str(int(p.get("product_id", 0)))
         cached = _product_map.get(pid, {})
@@ -523,7 +576,8 @@ def _productos_categoria(category_id: str) -> str:
 
 
 def _consultar_stock(product_id: str) -> str:
-    """Stock detallado de un producto."""
+    """Muestra el stock detallado de un producto específico."""
+    _ensure_caches()
     pid = product_id.strip()
     prod = _product_map.get(pid)
     if not prod:
@@ -590,6 +644,8 @@ def consultar_dynamo(operacion: str) -> str:
     try:
         result = handler(value)
         elapsed_ms = (time.time() - start) * 1000
+        logger.debug("consultar_dynamo(%s) → %.0fms", operacion, elapsed_ms)
         return f"{result}\n\n[DynamoDB: {elapsed_ms:.0f}ms]"
     except Exception as e:
+        logger.exception("Error en consultar_dynamo(%s)", operacion)
         return f"Error en consulta DynamoDB: {str(e)}"
