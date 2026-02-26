@@ -16,12 +16,13 @@ import time
 import logging
 import threading
 from decimal import Decimal
+from datetime import datetime
 
 import boto3
 from botocore.config import Config as BotoConfig
 from boto3.dynamodb.conditions import Key
 from strands import tool
-from core.config import AWS_REGION, DYNAMO_PREFIX, MAX_ROWS
+from core.config import AWS_REGION, DYNAMO_PREFIX, MAX_ROWS, CURRENT_DATE
 
 logger = logging.getLogger(__name__)
 
@@ -126,6 +127,8 @@ _COL_LABELS = {
     "warehouse_location": "bodega",
     "low_stock_threshold": "umbral_bajo",
     "last_updated": "ultima_actualizacion",
+    "is_return_eligible": "es_elegible_devolucion",
+    "rejection_reason": "motivo_rechazo",
 }
 
 # Traducción de valores del sistema → español natural
@@ -437,11 +440,59 @@ def _detalle_pedido(order_id: str) -> str:
             "payment_method", "delivery_method",
         ]))
     if items:
+        # Calcular elegibilidad determinística en el backend
+        order_status = (order.get("status") or "").strip().lower() if order else ""
+
+        for it in items:
+            raw_deadline = it.get("return_deadline")
+            item_status = (it.get("item_status") or "").strip().lower()
+            is_final = bool(it.get("is_final_sale") is True or str(it.get("is_final_sale")).lower() == "true")
+
+            reasons = []
+
+            # 1. Validar estado del pedido
+            if order_status not in ("delivered", "entregado"):
+                reasons.append(f"Pedido en estado '{_tr(order_status)}' (solo entregados)")
+
+            # 2. Validar estado del item
+            if item_status != "active":
+                reasons.append(f"Item en estado '{_tr(item_status)}'")
+
+            # 3. Validar venta final
+            if is_final:
+                reasons.append("Es venta final")
+
+            # 4. Validar deadline correctamente
+            if raw_deadline:
+                try:
+                    # CURRENT_DATE en config es string, comparamos contra string o convertimos ambos
+                    if raw_deadline < CURRENT_DATE:
+                        reasons.append(f"Plazo vencido el {raw_deadline}")
+                except (ValueError, TypeError):
+                    reasons.append("Formato de fecha inválido en return_deadline")
+            else:
+                # Deadline faltante solo es problema si el item podría ser elegible
+                if not is_final and order_status in ("delivered", "entregado"):
+                    reasons.append("Plazo no definido")
+
+            # Resultado determinístico
+            it["is_return_eligible"] = not reasons
+            it["rejection_reason"] = "; ".join(reasons) if reasons else "N/A"
+
+        # Flag agregado a nivel pedido
+        order["has_returnable_items"] = any(it["is_return_eligible"] for it in items)
+
         parts.append("\nITEMS:")
         parts.append(_to_table(items, [
-            "product_name", "qty", "unit_price",
-            "item_status", "return_deadline", "warranty_expires_at",
-            "warranty_months", "return_days", "is_final_sale",
+            "product_name",
+            "qty",
+            "unit_price",
+            "item_status",
+            "return_deadline",
+            "is_return_eligible",
+            "rejection_reason",
+            "warranty_months",
+            "is_final_sale",
         ]))
     if shipments:
         parts.append("\nENVÍOS:")

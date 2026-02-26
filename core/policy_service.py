@@ -18,6 +18,7 @@ import os
 import re
 import logging
 import threading
+from concurrent.futures import ThreadPoolExecutor
 
 import boto3
 from botocore.config import Config as BotoConfig
@@ -116,12 +117,14 @@ _DOC_MAP = {
 
 _policy_lock = threading.Lock()
 _policy_loaded = False
-_sections_cache: dict[str, str] = {}
+
+# Caché de secciones: lista de dicts con {key, text, key_norm, text_norm}
+_sections_cache: list[dict[str, str]] = []
 _full_docs: dict[str, str] = {}
 
 
 def _load_from_s3() -> dict[str, str]:
-    """Lee los archivos de políticas desde S3.
+    """Lee los archivos de políticas desde S3 en paralelo.
 
     Returns:
         Diccionario {nombre_archivo: contenido}.
@@ -129,15 +132,23 @@ def _load_from_s3() -> dict[str, str]:
     client = _get_s3_client()
     docs: dict[str, str] = {}
 
-    for filename in _DOC_MAP:
+    def _fetch_file(filename: str) -> tuple[str, str | None]:
         key = f"{POLICY_S3_PREFIX}{filename}"
         try:
             resp = client.get_object(Bucket=POLICY_S3_BUCKET, Key=key)
             content = resp["Body"].read().decode("utf-8")
-            docs[filename] = content
             logger.debug("S3: cargado %s (%d bytes)", key, len(content))
+            return filename, content
         except Exception:
             logger.warning("No se pudo cargar %s desde S3", key)
+            return filename, None
+
+    with ThreadPoolExecutor(max_workers=min(len(_DOC_MAP), 5)) as executor:
+        results = list(executor.map(_fetch_file, _DOC_MAP.keys()))
+
+    for filename, content in results:
+        if content:
+            docs[filename] = content
 
     return docs
 
@@ -190,16 +201,25 @@ def ensure_policies():
             logger.info("POLICY_S3_BUCKET no configurado, usando carpeta local")
             raw_docs = _load_from_local()
 
-        # Parsear cada documento en secciones
+        # Parsear cada documento en secciones y pre-normalizar
+        all_sections = []
         for filename, content in raw_docs.items():
             doc_name = _DOC_MAP.get(filename, filename)
             _full_docs[doc_name] = content
             sections = _parse_sections(content, doc_name)
-            _sections_cache.update(sections)
+            
+            for key, text in sections.items():
+                all_sections.append({
+                    "key": key,
+                    "text": text,
+                    "key_norm": _normalize(key),
+                    "text_norm": _normalize(text)
+                })
 
+        _sections_cache = all_sections
         _policy_loaded = True
         logger.info(
-            "Políticas cargadas: %d documentos, %d secciones",
+            "Políticas cargadas: %d documentos, %d secciones pre-normalizadas",
             len(raw_docs), len(_sections_cache),
         )
 
@@ -250,21 +270,21 @@ _KEYWORD_BOOST = {
 _MAX_SECTIONS = 5
 
 
-def _score_section(section_key: str, section_text: str, query_tokens: list[str],
+def _score_section(section_data: dict[str, str], query_tokens: list[str],
                    preferred_doc: str | None) -> float:
-    """Calcula un puntaje de relevancia para una sección dado un conjunto de tokens.
+    """Calcula un puntaje de relevancia usando datos pre-normalizados.
 
     Args:
-        section_key: Clave de la sección (ej: 'devoluciones::plazos').
-        section_text: Contenido de la sección.
+        section_data: Dict con {key, text, key_norm, text_norm}.
         query_tokens: Lista de tokens normalizados de la consulta.
         preferred_doc: Documento preferido por las keywords (puede ser None).
 
     Returns:
-        Puntaje numérico de relevancia (mayor = más relevante).
+        Puntaje numérico de relevancia.
     """
-    key_norm = _normalize(section_key)
-    text_norm = _normalize(section_text)
+    key_norm = section_data["key_norm"]
+    text_norm = section_data["text_norm"]
+    section_key = section_data["key"]
 
     score = 0.0
 
@@ -307,12 +327,12 @@ def _find_relevant_sections(query: str) -> str:
             preferred_doc = doc
             break
 
-    # Puntuar todas las secciones
+    # Puntuar todas las secciones usando el caché pre-normalizado
     scored: list[tuple[float, str, str]] = []
-    for key, text in _sections_cache.items():
-        score = _score_section(key, text, tokens, preferred_doc)
+    for section_data in _sections_cache:
+        score = _score_section(section_data, tokens, preferred_doc)
         if score > 0:
-            scored.append((score, key, text))
+            scored.append((score, section_data["key"], section_data["text"]))
 
     # Ordenar por puntaje descendente
     scored.sort(key=lambda x: x[0], reverse=True)

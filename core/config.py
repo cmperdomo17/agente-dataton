@@ -17,8 +17,11 @@ except ImportError:
     pass
 
 # --- AWS ---
+# Credenciales estáticas (Vercel / producción): definir AWS_ACCESS_KEY_ID y AWS_SECRET_ACCESS_KEY
+# en las variables de entorno del servicio de despliegue. boto3 las detecta automáticamente.
+# Localmente se puede seguir usando AWS_PROFILE para desarrollo.
 AWS_PROFILE = os.getenv("AWS_PROFILE", "Mario")
-AWS_REGION = os.getenv("AWS_REGION", "us-east-2")
+AWS_REGION   = os.getenv("AWS_REGION", "us-east-2")
 
 # --- DynamoDB ---
 MAX_ROWS = int(os.getenv("MAX_ROWS", "20"))
@@ -51,6 +54,9 @@ logging.basicConfig(
 for _noisy_lib in ("botocore", "boto3", "urllib3", "strands"):
     logging.getLogger(_noisy_lib).setLevel(logging.WARNING)
 
-# Configurar perfil AWS para boto3 (solo si no viene por otro mecanismo)
-if AWS_PROFILE and "AWS_PROFILE" not in os.environ:
+# Configurar perfil AWS para boto3 SOLO si no hay credenciales estáticas en el entorno.
+# En Vercel (producción), AWS_ACCESS_KEY_ID y AWS_SECRET_ACCESS_KEY deben estar configuradas
+# como variables de entorno del proyecto → boto3 las usa automáticamente sin necesidad de perfil.
+_has_static_creds = bool(os.getenv("AWS_ACCESS_KEY_ID"))
+if not _has_static_creds and AWS_PROFILE and "AWS_PROFILE" not in os.environ:
     os.environ["AWS_PROFILE"] = AWS_PROFILE
