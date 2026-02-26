@@ -4,7 +4,7 @@ from strands.models import BedrockModel
 
 from core.config import MODEL_ID, MODEL_TEMPERATURE, AGENT_STREAMING
 from core.athena_service import consultar_athena
-from core.dynamo_service import consultar_dynamo
+from core.dynamo_service_updated import consultar_dynamo
 from core.prompt import build_system_prompt
 
 

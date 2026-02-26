@@ -1,7 +1,7 @@
 from .base_judge import BaseJudge
 
 class BusinessJudge(BaseJudge):
-    def evaluate(self, user_input, agent_response, tool_trace):
+    def evaluate(self, user_input, agent_response, tool_trace, expected_data=None):
         prompt = f"""
         Actúa como Gerente de Servicio al Cliente de OmniRetail.
         Evalúa si el agente sigue las políticas de la empresa y el flujo lógico.

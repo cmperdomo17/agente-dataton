@@ -13,7 +13,21 @@ ATHENA_POLL_INTERVAL = 0.5  # Tiempo entre cada revisión del estado
 ATHENA_MAX_ROWS = 20        # Máximo de filas a mostrar en la respuesta
 
 # --- DynamoDB ---
-DYNAMO_TABLE = "OmniRetailData"
+DYNAMO_TABLES = {
+    "products": "omniretail_products",
+    "stock": "omniretail_stock",
+    "customers": "omniretail_customers",
+    "customer_emails": "omniretail_customer_emails",
+    "addresses": "omniretail_addresses",
+    "cards": "omniretail_cards",
+    "orders": "omniretail_orders",
+    "order_items": "omniretail_order_items",
+    "shipments": "omniretail_shipments",
+    "tracking": "omniretail_tracking",
+    "brands": "omniretail_brands",
+    "categories": "omniretail_categories",
+    "promotions": "omniretail_promotions",
+}
 
 # --- Modelo ---
 MODEL_ID = "us.anthropic.claude-3-5-haiku-20241022-v1:0"
