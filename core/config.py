@@ -1,45 +1,65 @@
+"""
+Configuración centralizada del agente OmniRetail.
+
+Lee valores desde variables de entorno con fallbacks sensatos.
+Para configurar localmente, copiar .env.example → .env y ajustar valores.
+"""
+
 import os
+import logging
 from datetime import datetime
 
-# --- AWS ---
-#AWS_PROFILE = "Mario"
-AWS_REGION = "us-east-2"
+# Cargar .env si existe (opcional, no falla si python-dotenv no está instalado)
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
 
-# --- Athena ---
-ATHENA_DB = "dataton-db"
-ATHENA_OUTPUT = "s3://dataton-challenge-unicauca-athena-results/"
-ATHENA_MAX_WAIT = 20        # Máximo de segundos esperando respuesta
-ATHENA_POLL_INTERVAL = 0.5  # Tiempo entre cada revisión del estado
-ATHENA_MAX_ROWS = 20        # Máximo de filas a mostrar en la respuesta
+# --- AWS ---
+## Credenciales estáticas (Vercel / producción): definir AWS_ACCESS_KEY_ID y AWS_SECRET_ACCESS_KEY
+# en las variables de entorno del servicio de despliegue. boto3 las detecta automáticamente.
+# Localmente se puede seguir usando AWS_PROFILE para desarrollo.
+#AWS_PROFILE = os.getenv("AWS_PROFILE", "Mario")
+AWS_REGION   = os.getenv("AWS_REGION", "us-east-2")
 
 # --- DynamoDB ---
-DYNAMO_TABLES = {
-    "products": "omniretail_products",
-    "stock": "omniretail_stock",
-    "customers": "omniretail_customers",
-    "customer_emails": "omniretail_customer_emails",
-    "addresses": "omniretail_addresses",
-    "cards": "omniretail_cards",
-    "orders": "omniretail_orders",
-    "order_items": "omniretail_order_items",
-    "shipments": "omniretail_shipments",
-    "tracking": "omniretail_tracking",
-    "brands": "omniretail_brands",
-    "categories": "omniretail_categories",
-    "promotions": "omniretail_promotions",
-}
+MAX_ROWS = int(os.getenv("MAX_ROWS", "20"))
+DYNAMO_PREFIX = os.getenv("DYNAMO_PREFIX", "omniretail_")
 
-# --- Modelo ---
-MODEL_ID = "us.anthropic.claude-3-5-haiku-20241022-v1:0"
-MODEL_TEMPERATURE = 0.0
+# --- Modelo Bedrock ---
+MODEL_ID = os.getenv("MODEL_ID", "us.anthropic.claude-3-5-haiku-20241022-v1:0")
+MODEL_TEMPERATURE = float(os.getenv("MODEL_TEMPERATURE", "0.0"))
 
 # --- Rutas ---
 SCHEMA_PATH = os.path.join(os.path.dirname(__file__), "data_dictionary.json")
 
-# --- Fecha actual del sistema ---
+# --- S3 Políticas ---
+POLICY_S3_BUCKET = os.getenv("POLICY_S3_BUCKET", "omniretail-policies")
+POLICY_S3_PREFIX = os.getenv("POLICY_S3_PREFIX", "politicas/")
+POLICY_LOCAL_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "politicas")
+
+# --- Fecha actual (se evalúa al arrancar la app) ---
 CURRENT_DATE = datetime.now().strftime("%Y-%m-%d")
 
-#os.environ["AWS_PROFILE"] = AWS_PROFILE
+# --- Logging ---
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
+logging.basicConfig(
+    level=getattr(logging, LOG_LEVEL, logging.INFO),
+    format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
+    datefmt="%H:%M:%S",
+)
+
+# Silenciar librerías externas ruidosas (botocore, strands, urllib3)
+for _noisy_lib in ("botocore", "boto3", "urllib3", "strands"):
+    logging.getLogger(_noisy_lib).setLevel(logging.WARNING)
+
+# Configurar perfil AWS para boto3 SOLO si no hay credenciales estáticas en el entorno.
+# En Vercel (producción), AWS_ACCESS_KEY_ID y AWS_SECRET_ACCESS_KEY deben estar configuradas
+# como variables de entorno del proyecto → boto3 las usa automáticamente sin necesidad de perfil.
+_has_static_creds = bool(os.getenv("AWS_ACCESS_KEY_ID"))
+if not _has_static_creds and AWS_PROFILE and "AWS_PROFILE" not in os.environ:
+    os.environ["AWS_PROFILE"] = AWS_PROFILE
 
 # Agent
 AGENT_STREAMING = os.getenv("AGENT_STREAMING", "true").lower() == "true"
