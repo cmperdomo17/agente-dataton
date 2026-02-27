@@ -16,16 +16,14 @@ from core.prompt import build_system_prompt
 logger = logging.getLogger(__name__)
 
 
-def create_agent(streaming: bool | None = None) -> Agent:
+def create_agent(streaming: bool = True) -> Agent:
+    """Crea y devuelve el agente configurado con su modelo, prompt y herramientas."""
     prompt = build_system_prompt()
-
-    if streaming is None:
-        streaming = AGENT_STREAMING
 
     model = BedrockModel(
         model_id=MODEL_ID,
         temperature=MODEL_TEMPERATURE,
-        streaming=bool(streaming),
+        streaming=streaming,
     )
 
     logger.info("Agente creado con modelo=%s", MODEL_ID)

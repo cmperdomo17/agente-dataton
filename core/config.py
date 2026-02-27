@@ -20,7 +20,7 @@ except ImportError:
 ## Credenciales estáticas (Vercel / producción): definir AWS_ACCESS_KEY_ID y AWS_SECRET_ACCESS_KEY
 # en las variables de entorno del servicio de despliegue. boto3 las detecta automáticamente.
 # Localmente se puede seguir usando AWS_PROFILE para desarrollo.
-#AWS_PROFILE = os.getenv("AWS_PROFILE", "Mario")
+AWS_PROFILE = os.getenv("AWS_PROFILE", "Valen-Agentic")
 AWS_REGION   = os.getenv("AWS_REGION", "us-east-2")
 
 # --- DynamoDB ---
