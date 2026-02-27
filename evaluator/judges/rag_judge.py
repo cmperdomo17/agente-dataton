@@ -1,0 +1,185 @@
+from .base_judge import BaseJudge
+import json
+import unicodedata
+from typing import Any, Dict, List
+
+
+class RagJudge(BaseJudge):
+    """
+    Judge for document-grounded answers.
+    Uses light deterministic checks plus semantic review by the LLM.
+    """
+
+    RETRIEVAL_KEYWORDS = [
+        "document", "documents", "doc", "docs", "retriev", "search",
+        "knowledge", "kb", "policy", "policies", "file", "files",
+        "rag", "guide", "manual", "faq"
+    ]
+
+    def evaluate(self, user_input, agent_response, tool_trace, expected_data=None):
+        expected_data = expected_data or {}
+
+        det = self._deterministic_checks(
+            agent_response=agent_response,
+            tool_trace=tool_trace or [],
+            expected_data=expected_data,
+        )
+
+        llm_verdict = self._semantic_review(
+            user_input=user_input,
+            agent_response=agent_response,
+            tool_trace=tool_trace or [],
+            expected_data=expected_data,
+            deterministic_issues=det["issues"],
+            score_cap=det["score_cap"],
+        )
+
+        llm_score = self._safe_int(llm_verdict.get("score", 0))
+        final_score = min(llm_score, det["score_cap"])
+
+        if det["hard_fail"]:
+            final_score = min(final_score, 40)
+
+        feedback_parts = []
+        if det["issues"]:
+            feedback_parts.append("Deterministic checks: " + " | ".join(det["issues"]))
+        if llm_verdict.get("feedback"):
+            feedback_parts.append("LLM review: " + str(llm_verdict["feedback"]))
+
+        return {
+            "score": final_score,
+            "feedback": " || ".join(feedback_parts) if feedback_parts else "Sin feedback",
+        }
+
+    def _deterministic_checks(
+        self,
+        agent_response: str,
+        tool_trace: List[Dict[str, Any]],
+        expected_data: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        issues: List[str] = []
+        score_cap = 100
+        hard_fail = False
+
+        must_use_retrieval = bool(expected_data.get("must_use_retrieval", False))
+        must_not_hallucinate = bool(expected_data.get("must_not_hallucinate", True))
+        expected_fact = expected_data.get("expected_fact")
+        expected_facts = expected_data.get("expected_facts", []) or ([] if not expected_fact else [expected_fact])
+
+        tool_names = self._extract_tool_names(tool_trace)
+        retrieval_used = self._used_retrieval_tool(tool_names)
+
+        required_tools = expected_data.get("required_tools", []) or []
+        required_any_of_tools = expected_data.get("required_any_of_tools", []) or []
+
+        if must_use_retrieval and not retrieval_used:
+            issues.append("El caso exige retrieval documental y no hay evidencia de uso.")
+            score_cap = min(score_cap, 35)
+            hard_fail = True
+
+        if required_tools:
+            missing = [req for req in required_tools if not any(self._normalize_text(req) in t for t in tool_names)]
+            if missing:
+                issues.append(f"No usó tools documentales requeridas: {', '.join(missing)}.")
+                score_cap = min(score_cap, 60)
+
+        if required_any_of_tools:
+            any_ok = any(
+                any(self._normalize_text(option) in used for used in tool_names)
+                for option in required_any_of_tools
+            )
+            if not any_ok:
+                issues.append(
+                    f"No usó ninguna de las tools documentales aceptadas: {', '.join(required_any_of_tools)}."
+                )
+                score_cap = min(score_cap, 60)
+
+        # Soft fact coverage check by normalized containment.
+        normalized_response = self._normalize_text(agent_response)
+        missing_facts = []
+        for fact in expected_facts:
+            if self._normalize_text(str(fact)) not in normalized_response:
+                missing_facts.append(fact)
+
+        if missing_facts:
+            issues.append(
+                "La respuesta no cubre explícitamente estos hechos esperados: "
+                + "; ".join(map(str, missing_facts))
+            )
+            score_cap = min(score_cap, 70)
+            if must_not_hallucinate and must_use_retrieval and not retrieval_used:
+                hard_fail = True
+
+        return {
+            "issues": issues,
+            "score_cap": score_cap,
+            "hard_fail": hard_fail,
+        }
+
+    def _semantic_review(
+        self,
+        user_input: str,
+        agent_response: str,
+        tool_trace: List[Dict[str, Any]],
+        expected_data: Dict[str, Any],
+        deterministic_issues: List[str],
+        score_cap: int,
+    ) -> Dict[str, Any]:
+        prompt = f"""
+Actúa como un evaluador experto en RAG y grounding documental.
+
+Tu tarea es juzgar si la respuesta del agente está bien sustentada en evidencia documental.
+
+CONTEXTO:
+- Pregunta del usuario: {json.dumps(user_input, ensure_ascii=False)}
+- Respuesta final del agente: {json.dumps(agent_response, ensure_ascii=False)}
+- Tool trace: {json.dumps(tool_trace, ensure_ascii=False)}
+- Expected data: {json.dumps(expected_data, ensure_ascii=False)}
+- Hallazgos determinísticos previos: {json.dumps(deterministic_issues, ensure_ascii=False)}
+- Score cap máximo permitido: {score_cap}
+
+CRITERIOS:
+1. Retrieval: ¿hay señales de que consultó documentación?
+2. Grounding: ¿la respuesta está alineada con la política / documento esperado?
+3. Coverage: ¿incluye los hechos clave esperados?
+4. Hallucination: ¿evita agregar información no soportada?
+
+INSTRUCCIONES:
+- Devuelve un score entero entre 0 y {score_cap}.
+- Si el caso exige retrieval y no hay evidencia en el trace, el score debe ser bajo.
+- Si faltan hechos clave, no ignores ese problema.
+- Penaliza respuestas seguras pero no respaldadas.
+
+Responde SOLO en JSON con esta forma exacta:
+{{"score": int, "feedback": "str"}}
+"""
+        return self._call_llm(prompt)
+
+    def _extract_tool_names(self, tool_trace: List[Dict[str, Any]]) -> List[str]:
+        names = []
+        for entry in tool_trace or []:
+            raw = (
+                entry.get("tool")
+                or entry.get("tool_name")
+                or entry.get("name")
+                or entry.get("function")
+                or ""
+            )
+            names.append(self._normalize_text(str(raw)))
+        return names
+
+    def _used_retrieval_tool(self, tool_names: List[str]) -> bool:
+        for tool_name in tool_names:
+            if any(keyword in tool_name for keyword in self.RETRIEVAL_KEYWORDS):
+                return True
+        return False
+
+    def _normalize_text(self, value: str) -> str:
+        value = unicodedata.normalize("NFKD", value).encode("ascii", "ignore").decode("ascii")
+        return value.lower().strip()
+
+    def _safe_int(self, value: Any) -> int:
+        try:
+            return int(value)
+        except Exception:
+            return 0
