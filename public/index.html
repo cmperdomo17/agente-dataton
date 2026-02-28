@@ -38,6 +38,10 @@
         --agent-bubble: rgba(255, 255, 255, 0.04);
         --radius: 16px;
         --input-radius: 28px;
+        --green: #4ade80;
+        --red: #f87171;
+        --yellow: #facc15;
+        --eval-width: 420px;
       }
 
       html,
@@ -66,6 +70,11 @@
         align-items: center;
         height: 100dvh;
         padding: 0 16px;
+        transition: margin-right 0.35s cubic-bezier(0.4, 0, 0.2, 1);
+      }
+
+      #app.panel-open {
+        margin-right: var(--eval-width);
       }
 
       /* ── Logo / Header ──────────────────────────────── */
@@ -77,7 +86,7 @@
         flex-shrink: 0;
         transition: all 0.5s cubic-bezier(0.4, 0, 0.2, 1);
         padding-top: 15vh;
-        padding-bottom: 24px; /* Added separation */
+        padding-bottom: 24px;
       }
 
       #header.compact {
@@ -139,31 +148,16 @@
         gap: 12px;
         scrollbar-width: thin;
         scrollbar-color: rgba(255, 255, 255, 0.1) transparent;
-        
-        /* ── Scrollbar separado del borde ── */
-        scrollbar-gutter: stable;      /* reserva espacio aunque no haya scroll */
-        padding-right: 6px;            /* separa contenido del scrollbar */
+        scrollbar-gutter: stable;
+        padding-right: 6px;
       }
 
-      /* ── Scrollbar estilizado (webkit) ── */
-      #chat::-webkit-scrollbar {
-        width: 5px;
-      }
-      #chat::-webkit-scrollbar-track {
-        background: transparent;
-        margin-block: 6px;             /* separa arriba y abajo del track */
-      }
-      #chat::-webkit-scrollbar-thumb {
-        background: rgba(255, 255, 255, 0.15);
-        border-radius: 99px;
-      }
-      #chat::-webkit-scrollbar-thumb:hover {
-        background: rgba(255, 255, 255, 0.28);
-      }
+      #chat::-webkit-scrollbar { width: 5px; }
+      #chat::-webkit-scrollbar-track { background: transparent; margin-block: 6px; }
+      #chat::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.15); border-radius: 99px; }
+      #chat::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.28); }
 
-      #chat:empty {
-        display: none;
-      }
+      #chat:empty { display: none; }
 
       .msg {
         display: flex;
@@ -173,24 +167,12 @@
       }
 
       @keyframes fadeUp {
-        from {
-          opacity: 0;
-          transform: translateY(10px);
-        }
-        to {
-          opacity: 1;
-          transform: translateY(0);
-        }
+        from { opacity: 0; transform: translateY(10px); }
+        to { opacity: 1; transform: translateY(0); }
       }
 
-      .msg.user {
-        align-self: flex-end;
-        align-items: flex-end;
-      }
-      .msg.agent {
-        align-self: flex-start;
-        align-items: flex-start;
-      }
+      .msg.user { align-self: flex-end; align-items: flex-end; }
+      .msg.agent { align-self: flex-start; align-items: flex-start; }
 
       .msg-label {
         font-size: 0.68rem;
@@ -207,10 +189,8 @@
         line-height: 1.65;
         white-space: pre-wrap;
         word-break: break-word;
-        
-        /* ── Solución cursor flotante ── */
         position: relative;
-        padding-right: 12px; /* espacio para que el texto no toque el scrollbar */
+        padding-right: 12px;
       }
 
       .msg.user .msg-bubble {
@@ -225,35 +205,18 @@
       }
 
       /* ── Typing indicator ───────────────────────────── */
-      .typing-dots {
-        display: flex;
-        gap: 5px;
-        padding: 4px 0;
-      }
+      .typing-dots { display: flex; gap: 5px; padding: 4px 0; }
       .typing-dots span {
-        width: 6px;
-        height: 6px;
+        width: 6px; height: 6px;
         background: var(--text-muted);
         border-radius: 50%;
         animation: bounce 1.2s infinite;
       }
-      .typing-dots span:nth-child(2) {
-        animation-delay: 0.2s;
-      }
-      .typing-dots span:nth-child(3) {
-        animation-delay: 0.4s;
-      }
+      .typing-dots span:nth-child(2) { animation-delay: 0.2s; }
+      .typing-dots span:nth-child(3) { animation-delay: 0.4s; }
       @keyframes bounce {
-        0%,
-        80%,
-        100% {
-          transform: translateY(0);
-          opacity: 0.4;
-        }
-        40% {
-          transform: translateY(-6px);
-          opacity: 1;
-        }
+        0%, 80%, 100% { transform: translateY(0); opacity: 0.4; }
+        40% { transform: translateY(-6px); opacity: 1; }
       }
 
       /* ── Input area ─────────────────────────────────── */
@@ -272,10 +235,7 @@
         border: 1px solid var(--border);
         border-radius: var(--input-radius);
         padding: 10px 10px 10px 22px;
-        transition:
-          border-color 0.2s,
-          background 0.2s,
-          box-shadow 0.3s;
+        transition: border-color 0.2s, background 0.2s, box-shadow 0.3s;
       }
 
       #input-box:focus-within {
@@ -299,12 +259,8 @@
         scrollbar-width: none;
       }
 
-      #msg-input::placeholder {
-        color: var(--text-muted);
-      }
-      #msg-input::-webkit-scrollbar {
-        display: none;
-      }
+      #msg-input::placeholder { color: var(--text-muted); }
+      #msg-input::-webkit-scrollbar { display: none; }
 
       #send-btn {
         width: 38px;
@@ -318,10 +274,7 @@
         justify-content: center;
         cursor: pointer;
         flex-shrink: 0;
-        transition:
-          background 0.2s,
-          transform 0.15s,
-          border-color 0.2s;
+        transition: background 0.2s, transform 0.15s, border-color 0.2s;
       }
 
       #send-btn:hover:not(:disabled) {
@@ -329,26 +282,16 @@
         border-color: var(--border-focus);
         transform: scale(1.06);
       }
-
-      #send-btn:active {
-        transform: scale(0.95);
-      }
-
-      #send-btn:disabled {
-        opacity: 0.35;
-        cursor: not-allowed;
-      }
-
-      #send-btn svg {
-        pointer-events: none;
-      }
+      #send-btn:active { transform: scale(0.95); }
+      #send-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+      #send-btn svg { pointer-events: none; }
 
       /* ── Footer note ────────────────────────────────── */
       #footer-note {
         font-size: 0.72rem;
         color: var(--text-muted);
         text-align: center;
-        padding-bottom: 12px; /* Increased from 6px */
+        padding-bottom: 12px;
         flex-shrink: 0;
       }
 
@@ -356,12 +299,12 @@
       .typing-cursor {
         display: inline-block;
         width: 2px;
-        height: 0.85em;           /* un poco menos que 1em evita que sobresalga */
+        height: 0.85em;
         background: currentColor;
         margin-left: 1px;
-        vertical-align: middle;   /* ← cambia de text-bottom a middle */
+        vertical-align: middle;
         animation: blink 1s step-end infinite;
-        translate: 0 1px;         /* micro-ajuste vertical fino */
+        translate: 0 1px;
       }
 
       @keyframes blink {
@@ -369,58 +312,444 @@
         50% { opacity: 0; }
       }
 
-    #toast {
-      position: fixed;
-      bottom: 220px;
-      left: 50%;
-      transform: translateX(-50%) translateY(20px);
-      background: #2a0a0a;
-      border: 1px solid #5c2020;
-      color: #ff8080;
-      font-size: 0.82rem;
-      padding: 8px 18px;
-      border-radius: 12px;
-      opacity: 0;
-      transition: all 0.3s ease;
-      pointer-events: none;
-      white-space: nowrap;
-    }
+      #toast {
+        position: fixed;
+        bottom: 220px;
+        left: 50%;
+        transform: translateX(-50%) translateY(20px);
+        background: #2a0a0a;
+        border: 1px solid #5c2020;
+        color: #ff8080;
+        font-size: 0.82rem;
+        padding: 8px 18px;
+        border-radius: 12px;
+        opacity: 0;
+        transition: all 0.3s ease;
+        pointer-events: none;
+        white-space: nowrap;
+      }
 
-    @keyframes charFade {
-      to { opacity: 1; }
-    }
+      @keyframes charFade { to { opacity: 1; } }
 
-    /* ── Metrics style ────────────────────────────── */
-    .msg-meta {
-      font-size: 0.65rem;
-      color: var(--text-muted);
-      margin-top: 6px;
-      opacity: 0;
-      animation: charFade 0.5s ease forwards;
-    }
+      .msg-meta {
+        font-size: 0.65rem;
+        color: var(--text-muted);
+        margin-top: 6px;
+        opacity: 0;
+        animation: charFade 0.5s ease forwards;
+      }
+
       #toast.show {
         opacity: 1;
         transform: translateX(-50%) translateY(0);
       }
 
+      /* ── Evaluator toggle button ────────────────────── */
+      #eval-toggle {
+        position: fixed;
+        top: 16px;
+        right: 16px;
+        z-index: 100;
+        width: 42px;
+        height: 42px;
+        border-radius: 12px;
+        background: var(--surface);
+        border: 1px solid var(--border);
+        color: var(--text);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        cursor: pointer;
+        font-size: 1.2rem;
+        transition: background 0.2s, border-color 0.2s, transform 0.15s, box-shadow 0.3s;
+      }
+
+      #eval-toggle:hover {
+        background: var(--btn-hover);
+        border-color: var(--border-focus);
+        transform: scale(1.06);
+        box-shadow: 0 0 12px rgba(255,255,255,0.06);
+      }
+
+      #eval-toggle.active {
+        background: rgba(255,255,255,0.15);
+        border-color: var(--border-focus);
+      }
+
+      /* ── Evaluator Panel ────────────────────────────── */
+      #eval-panel {
+        position: fixed;
+        top: 0;
+        right: 0;
+        width: var(--eval-width);
+        height: 100dvh;
+        z-index: 90;
+        background: var(--bg);
+        border-left: 1px solid var(--border);
+        transform: translateX(100%);
+        transition: transform 0.35s cubic-bezier(0.4, 0, 0.2, 1);
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+      }
+
+      #eval-panel.open {
+        transform: translateX(0);
+      }
+
+      .eval-header {
+        padding: 20px 20px 16px;
+        border-bottom: 1px solid var(--border);
+        flex-shrink: 0;
+      }
+
+      .eval-header-top {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin-bottom: 8px;
+      }
+
+      .eval-header h2 {
+        font-size: 1.1rem;
+        font-weight: 600;
+        letter-spacing: -0.01em;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+
+      .eval-header p {
+        font-size: 0.78rem;
+        color: var(--text-muted);
+        line-height: 1.4;
+      }
+
+      #eval-run-btn {
+        padding: 8px 18px;
+        border-radius: 10px;
+        background: rgba(255, 255, 255, 0.1);
+        border: 1px solid var(--border);
+        color: var(--text);
+        font-family: inherit;
+        font-size: 0.82rem;
+        font-weight: 500;
+        cursor: pointer;
+        transition: background 0.2s, border-color 0.2s, transform 0.15s;
+        white-space: nowrap;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
+
+      #eval-run-btn:hover:not(:disabled) {
+        background: var(--btn-hover);
+        border-color: var(--border-focus);
+        transform: scale(1.03);
+      }
+
+      #eval-run-btn:disabled {
+        opacity: 0.4;
+        cursor: not-allowed;
+      }
+
+      /* ── Eval Content ── */
+      .eval-content {
+        flex: 1;
+        overflow-y: auto;
+        padding: 16px 20px;
+        scrollbar-width: thin;
+        scrollbar-color: rgba(255, 255, 255, 0.1) transparent;
+      }
+
+      .eval-content::-webkit-scrollbar { width: 4px; }
+      .eval-content::-webkit-scrollbar-track { background: transparent; }
+      .eval-content::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.15); border-radius: 99px; }
+
+      /* KPI Row */
+      .eval-kpis {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 10px;
+        margin-bottom: 20px;
+      }
+
+      .eval-kpi {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        padding: 12px 14px;
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+      }
+
+      .eval-kpi-label {
+        font-size: 0.68rem;
+        color: var(--text-muted);
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+      }
+
+      .eval-kpi-value {
+        font-size: 1.3rem;
+        font-weight: 700;
+        letter-spacing: -0.02em;
+      }
+
+      .eval-kpi-value.green { color: var(--green); }
+      .eval-kpi-value.red { color: var(--red); }
+      .eval-kpi-value.yellow { color: var(--yellow); }
+
+      /* Level breakdown */
+      .eval-section-title {
+        font-size: 0.75rem;
+        color: var(--text-muted);
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        margin-bottom: 10px;
+        margin-top: 4px;
+      }
+
+      .eval-level-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 8px 12px;
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        margin-bottom: 6px;
+        font-size: 0.82rem;
+      }
+
+      .eval-level-name {
+        font-weight: 500;
+        text-transform: capitalize;
+      }
+
+      .eval-level-stats {
+        display: flex;
+        gap: 10px;
+        font-size: 0.75rem;
+        color: var(--text-muted);
+      }
+
+      /* Scenario cards */
+      .eval-scenario {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        margin-bottom: 8px;
+        overflow: hidden;
+        transition: border-color 0.2s;
+      }
+
+      .eval-scenario:hover {
+        border-color: rgba(255,255,255,0.18);
+      }
+
+      .eval-scenario-header {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 12px 14px;
+        cursor: pointer;
+        user-select: none;
+      }
+
+      .eval-scenario-badge {
+        width: 22px;
+        height: 22px;
+        border-radius: 6px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 0.72rem;
+        font-weight: 700;
+        flex-shrink: 0;
+      }
+
+      .eval-scenario-badge.pass { background: rgba(74,222,128,0.15); color: var(--green); }
+      .eval-scenario-badge.fail { background: rgba(248,113,113,0.15); color: var(--red); }
+
+      .eval-scenario-info {
+        flex: 1;
+        min-width: 0;
+      }
+
+      .eval-scenario-name {
+        font-size: 0.8rem;
+        font-weight: 500;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+
+      .eval-scenario-meta {
+        font-size: 0.68rem;
+        color: var(--text-muted);
+        display: flex;
+        gap: 8px;
+        margin-top: 2px;
+      }
+
+      .eval-scenario-score {
+        font-size: 0.82rem;
+        font-weight: 600;
+        flex-shrink: 0;
+      }
+
+      .eval-scenario-chevron {
+        color: var(--text-muted);
+        transition: transform 0.2s;
+        flex-shrink: 0;
+        font-size: 0.7rem;
+      }
+
+      .eval-scenario.expanded .eval-scenario-chevron {
+        transform: rotate(90deg);
+      }
+
+      .eval-scenario-body {
+        display: none;
+        padding: 0 14px 14px;
+      }
+
+      .eval-scenario.expanded .eval-scenario-body {
+        display: block;
+      }
+
+      /* Steps inside scenario */
+      .eval-step {
+        background: rgba(255,255,255,0.02);
+        border: 1px solid rgba(255,255,255,0.06);
+        border-radius: 10px;
+        padding: 10px 12px;
+        margin-bottom: 6px;
+      }
+
+      .eval-step-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin-bottom: 6px;
+      }
+
+      .eval-step-name {
+        font-size: 0.75rem;
+        font-weight: 500;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
+
+      .eval-step-score {
+        font-size: 0.72rem;
+        font-weight: 600;
+      }
+
+      .eval-step-detail {
+        font-size: 0.72rem;
+        color: var(--text-muted);
+        line-height: 1.5;
+      }
+
+      .eval-step-detail strong {
+        color: var(--text);
+        font-weight: 500;
+      }
+
+      .eval-step-convo {
+        margin-top: 6px;
+        padding: 8px 10px;
+        background: rgba(255,255,255,0.02);
+        border-radius: 8px;
+        border: 1px solid rgba(255,255,255,0.05);
+      }
+
+      .eval-step-convo p {
+        font-size: 0.72rem;
+        line-height: 1.5;
+        margin-bottom: 4px;
+        word-break: break-word;
+      }
+
+      .eval-step-convo p:last-child { margin-bottom: 0; }
+
+      .eval-step-metrics {
+        display: flex;
+        gap: 12px;
+        margin-top: 6px;
+        font-size: 0.68rem;
+        color: var(--text-muted);
+      }
+
+      /* Loading spinner for eval */
+      .eval-loading {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 14px;
+        padding: 48px 0;
+        color: var(--text-muted);
+        font-size: 0.85rem;
+      }
+
+      .eval-spinner {
+        width: 28px;
+        height: 28px;
+        border: 2px solid var(--border);
+        border-top-color: var(--text);
+        border-radius: 50%;
+        animation: spin 0.8s linear infinite;
+      }
+
+      @keyframes spin { to { transform: rotate(360deg); } }
+
+      /* Empty state */
+      .eval-empty {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 12px;
+        padding: 60px 24px;
+        text-align: center;
+      }
+
+      .eval-empty-icon {
+        font-size: 2.2rem;
+        opacity: 0.3;
+      }
+
+      .eval-empty p {
+        font-size: 0.82rem;
+        color: var(--text-muted);
+        line-height: 1.5;
+      }
+
       /* ── Responsive ─────────────────────────────────── */
+      @media (max-width: 900px) {
+        :root { --eval-width: 100vw; }
+      }
+
       @media (max-width: 600px) {
-        .logo-title {
-          font-size: 1.8rem;
-        }
-        #header {
-          padding-top: 12vh;
-        }
+        .logo-title { font-size: 1.8rem; }
+        #header { padding-top: 12vh; }
       }
     </style>
   </head>
   <body>
     <canvas id="canvas"></canvas>
 
+    <!-- Evaluator toggle -->
+    <button id="eval-toggle" title="Panel de evaluación" aria-label="Abrir panel de evaluación">🛡️</button>
+
     <div id="app">
       <div id="header">
         <div class="logo-wrap">
-          <!-- OmniRetail SVG Logo -->
           <svg
             class="logo-icon"
             id="logo-svg"
@@ -428,51 +757,11 @@
             fill="none"
             xmlns="http://www.w3.org/2000/svg"
           >
-            <rect
-              width="44"
-              height="44"
-              rx="12"
-              fill="white"
-              fill-opacity="0.08"
-            />
-            <!-- Grid icon: 4 cells representing retail/data -->
-            <rect
-              x="10"
-              y="10"
-              width="10"
-              height="10"
-              rx="2.5"
-              fill="white"
-              opacity="0.9"
-            />
-            <rect
-              x="24"
-              y="10"
-              width="10"
-              height="10"
-              rx="2.5"
-              fill="white"
-              opacity="0.6"
-            />
-            <rect
-              x="10"
-              y="24"
-              width="10"
-              height="10"
-              rx="2.5"
-              fill="white"
-              opacity="0.6"
-            />
-            <rect
-              x="24"
-              y="24"
-              width="10"
-              height="10"
-              rx="2.5"
-              fill="white"
-              opacity="0.3"
-            />
-            <!-- Connection dot -->
+            <rect width="44" height="44" rx="12" fill="white" fill-opacity="0.08" />
+            <rect x="10" y="10" width="10" height="10" rx="2.5" fill="white" opacity="0.9" />
+            <rect x="24" y="10" width="10" height="10" rx="2.5" fill="white" opacity="0.6" />
+            <rect x="10" y="24" width="10" height="10" rx="2.5" fill="white" opacity="0.6" />
+            <rect x="24" y="24" width="10" height="10" rx="2.5" fill="white" opacity="0.3" />
             <circle cx="22" cy="22" r="2" fill="white" opacity="0.5" />
           </svg>
           <span class="logo-title">OmniRetail Agent</span>
@@ -526,14 +815,32 @@
 
     <div id="toast" role="alert"></div>
 
+    <!-- ── Evaluator Panel ── -->
+    <aside id="eval-panel" aria-label="Panel de evaluación">
+      <div class="eval-header">
+        <div class="eval-header-top">
+          <h2>🛡️ OmniJudge</h2>
+          <button id="eval-run-btn" aria-label="Ejecutar evaluación">
+            <span>▶</span> Evaluar
+          </button>
+        </div>
+        <p>Auditoría automática del agente sobre escenarios predefinidos.</p>
+      </div>
+      <div class="eval-content" id="eval-content">
+        <div class="eval-empty" id="eval-empty">
+          <div class="eval-empty-icon">📋</div>
+          <p>Presiona <strong>Evaluar</strong> para ejecutar el benchmark contra el agente.</p>
+          <p style="font-size:0.72rem;">Se ejecutarán todos los escenarios del golden dataset.</p>
+        </div>
+      </div>
+    </aside>
+
     <script>
       // ── Particle Background ──────────────────────────────────────────────
       (function () {
         const canvas = document.getElementById("canvas");
         const ctx = canvas.getContext("2d");
-        let W,
-          H,
-          particles = [];
+        let W, H, particles = [];
         const COUNT = 90;
         const SPEED = 0.35;
         const MAX_DIST = 130;
@@ -561,8 +868,6 @@
 
         function draw() {
           ctx.clearRect(0, 0, W, H);
-
-          // Draw lines between close particles
           for (let i = 0; i < particles.length; i++) {
             for (let j = i + 1; j < particles.length; j++) {
               const dx = particles[i].x - particles[j].x;
@@ -578,8 +883,6 @@
               }
             }
           }
-
-          // Draw dots
           for (const p of particles) {
             ctx.beginPath();
             ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
@@ -621,13 +924,11 @@
       let isLoading = false;
       let hasStarted = false;
 
-      // Auto-resize textarea
       inputEl.addEventListener("input", () => {
         inputEl.style.height = "auto";
         inputEl.style.height = Math.min(inputEl.scrollHeight, 140) + "px";
       });
 
-      // Enter to send (Shift+Enter for newline)
       inputEl.addEventListener("keydown", (e) => {
         if (e.key === "Enter" && !e.shiftKey) {
           e.preventDefault();
@@ -644,37 +945,36 @@
       }
 
       function addMessage(role, text, elapsed = null) {
-    const wrap = document.createElement('div');
-    wrap.className = `msg ${role}`;
+        const wrap = document.createElement('div');
+        wrap.className = `msg ${role}`;
 
-    const label = document.createElement('div');
-    label.className = 'msg-label';
-    label.textContent = role === 'user' ? 'Tú' : 'OmniRetail Agent';
+        const label = document.createElement('div');
+        label.className = 'msg-label';
+        label.textContent = role === 'user' ? 'Tú' : 'OmniRetail Agent';
 
-    const bubble = document.createElement('div');
-    bubble.className = 'msg-bubble';
+        const bubble = document.createElement('div');
+        bubble.className = 'msg-bubble';
 
-    wrap.appendChild(label);
-    wrap.appendChild(bubble);
-    chatEl.appendChild(wrap);
-    chatEl.scrollTop = chatEl.scrollHeight;
+        wrap.appendChild(label);
+        wrap.appendChild(bubble);
+        chatEl.appendChild(wrap);
+        chatEl.scrollTop = chatEl.scrollHeight;
 
-    if (role === 'user') {
-      bubble.textContent = text;
-      return bubble;
-    } else {
-      // Typewriter effect for agent
-      return typeText(bubble, text).then(() => {
-        if (elapsed !== null) {
-          const meta = document.createElement('div');
-          meta.className = 'msg-meta';
-          meta.textContent = `Respuesta en ${elapsed}s`;
-          wrap.appendChild(meta);
-          chatEl.scrollTop = chatEl.scrollHeight;
+        if (role === 'user') {
+          bubble.textContent = text;
+          return bubble;
+        } else {
+          return typeText(bubble, text).then(() => {
+            if (elapsed !== null) {
+              const meta = document.createElement('div');
+              meta.className = 'msg-meta';
+              meta.textContent = `Respuesta en ${elapsed}s`;
+              wrap.appendChild(meta);
+              chatEl.scrollTop = chatEl.scrollHeight;
+            }
+          });
         }
-      });
-    }
-  }
+      }
 
       function typeText(el, text, options = {}) {
         const {
@@ -706,22 +1006,17 @@
               const char = text.charAt(i);
 
               if (char === "\n") {
-                // ── Insertar <br> ANTES del cursor, sin mover el cursor ──
-                // Esto mantiene el cursor siempre pegado al último char real
                 cursor.before(document.createElement("br"));
-                // ⚠️ NO hacer el.appendChild(cursor) — eso lo baja a línea huérfana
               } else {
                 const span = document.createElement("span");
                 span.textContent = char;
-                cursor.before(span); // cursor siempre se queda al final automáticamente
+                cursor.before(span);
               }
 
               i++;
               chatEl.scrollTop = chatEl.scrollHeight;
               setTimeout(type, getDelay(char));
             } else {
-              // ── FIN: fade out directo, sin ningún reposicionamiento ──
-              // El cursor ya está en la posición correcta (después del último char)
               cursor.style.animation = "none";
               cursor.style.opacity = "1";
 
@@ -732,7 +1027,7 @@
                   cursor.remove();
                   resolve(el);
                 }, 400);
-              }, 500); // parpadea 500ms antes de desaparecer
+              }, 500);
             }
           }
 
@@ -761,7 +1056,7 @@
         wrap.appendChild(bubble);
         chatEl.appendChild(wrap);
         chatEl.scrollTop = chatEl.scrollHeight;
-        return wrap; // Return the typing indicator element
+        return wrap;
       }
 
       function removeTyping() {
@@ -785,11 +1080,9 @@
         isLoading = true;
         sendBtn.disabled = true;
 
-        // Reset input
         inputEl.value = "";
         inputEl.style.height = "auto";
 
-        // Show user message
         addMessage("user", msg);
         addTyping();
 
@@ -820,8 +1113,200 @@
         }
       }
 
-      // Focus input on load
       inputEl.focus();
+
+      // ── Evaluator Panel Logic ────────────────────────────────────────────
+      const evalToggle = document.getElementById("eval-toggle");
+      const evalPanel = document.getElementById("eval-panel");
+      const evalRunBtn = document.getElementById("eval-run-btn");
+      const evalContent = document.getElementById("eval-content");
+      const evalEmpty = document.getElementById("eval-empty");
+      const appEl = document.getElementById("app");
+
+      let evalOpen = false;
+      let evalRunning = false;
+
+      evalToggle.addEventListener("click", () => {
+        evalOpen = !evalOpen;
+        evalPanel.classList.toggle("open", evalOpen);
+        evalToggle.classList.toggle("active", evalOpen);
+        appEl.classList.toggle("panel-open", evalOpen);
+      });
+
+      evalRunBtn.addEventListener("click", runEvaluation);
+
+      async function runEvaluation() {
+        if (evalRunning) return;
+        evalRunning = true;
+        evalRunBtn.disabled = true;
+        evalRunBtn.innerHTML = '<span class="eval-spinner" style="width:14px;height:14px;border-width:1.5px;display:inline-block;"></span> Evaluando…';
+
+        // Show loading
+        evalContent.innerHTML = `
+          <div class="eval-loading">
+            <div class="eval-spinner"></div>
+            <span>Ejecutando escenarios…</span>
+            <span style="font-size:0.72rem;color:var(--text-muted);">Esto puede tardar varios minutos.</span>
+          </div>`;
+
+        try {
+          const res = await fetch("/api/evaluate", { method: "POST" });
+          const data = await res.json();
+
+          if (!res.ok) {
+            evalContent.innerHTML = `<div class="eval-empty"><div class="eval-empty-icon">⚠️</div><p style="color:var(--red);">Error: ${data.detail || 'Error desconocido'}</p></div>`;
+            return;
+          }
+
+          renderEvalResults(data.results, data.elapsed);
+        } catch (err) {
+          evalContent.innerHTML = `<div class="eval-empty"><div class="eval-empty-icon">⚠️</div><p style="color:var(--red);">No se pudo conectar con el servidor.</p></div>`;
+        } finally {
+          evalRunning = false;
+          evalRunBtn.disabled = false;
+          evalRunBtn.innerHTML = '<span>▶</span> Evaluar';
+        }
+      }
+
+      function renderEvalResults(payload, elapsed) {
+        const summary = payload.summary || {};
+        const scenarios = payload.scenario_results || [];
+
+        const totalScenarios = summary.total_scenarios || scenarios.length;
+        const passed = summary.passed_scenarios || 0;
+        const failed = totalScenarios - passed;
+        const totalSteps = summary.total_steps || 0;
+        const disqualified = summary.disqualified || false;
+        const hardGateFailedIds = summary.hard_gate_failed_ids || [];
+        const levelBreakdown = summary.level_breakdown || {};
+
+        // Compute avg score
+        let avgScore = 0;
+        if (scenarios.length > 0) {
+          avgScore = Math.round(scenarios.reduce((s, sc) => s + (sc.scenario_score || 0), 0) / scenarios.length);
+        }
+
+        let html = '';
+
+        // KPIs
+        html += `<div class="eval-kpis">
+          <div class="eval-kpi">
+            <span class="eval-kpi-label">Escenarios</span>
+            <span class="eval-kpi-value">${totalScenarios}</span>
+          </div>
+          <div class="eval-kpi">
+            <span class="eval-kpi-label">Aprobados</span>
+            <span class="eval-kpi-value green">${passed}</span>
+          </div>
+          <div class="eval-kpi">
+            <span class="eval-kpi-label">Score promedio</span>
+            <span class="eval-kpi-value ${avgScore >= 80 ? 'green' : avgScore >= 50 ? 'yellow' : 'red'}">${avgScore}%</span>
+          </div>
+          <div class="eval-kpi">
+            <span class="eval-kpi-label">Descalificado</span>
+            <span class="eval-kpi-value ${disqualified ? 'red' : 'green'}">${disqualified ? 'Sí' : 'No'}</span>
+          </div>
+        </div>`;
+
+        // Elapsed
+        if (elapsed) {
+          html += `<div style="font-size:0.7rem;color:var(--text-muted);margin-bottom:16px;text-align:center;">Evaluación completada en ${elapsed}s</div>`;
+        }
+
+        // Level breakdown
+        const levels = Object.keys(levelBreakdown);
+        if (levels.length > 0) {
+          html += `<div class="eval-section-title">Desglose por nivel</div>`;
+          for (const level of levels) {
+            const lv = levelBreakdown[level];
+            const lvTotal = lv.total || 0;
+            const lvPassed = lv.passed || 0;
+            const rate = lvTotal ? Math.round((lvPassed / lvTotal) * 100) : 0;
+            html += `<div class="eval-level-row">
+              <span class="eval-level-name">${level}</span>
+              <div class="eval-level-stats">
+                <span>${lvPassed}/${lvTotal}</span>
+                <span style="color:${rate >= 80 ? 'var(--green)' : rate >= 50 ? 'var(--yellow)' : 'var(--red)'}">${rate}%</span>
+              </div>
+            </div>`;
+          }
+        }
+
+        // Scenarios
+        html += `<div class="eval-section-title" style="margin-top:20px;">Escenarios (${scenarios.length})</div>`;
+
+        for (const sc of scenarios) {
+          const scPassed = sc.passed;
+          const badge = scPassed ? '✓' : '✗';
+          const badgeClass = scPassed ? 'pass' : 'fail';
+          const scoreColor = sc.scenario_score >= 80 ? 'var(--green)' : sc.scenario_score >= 50 ? 'var(--yellow)' : 'var(--red)';
+
+          let stepsHtml = '';
+          const steps = sc.step_results || [];
+          for (const step of steps) {
+            const stepIcon = step.passed ? '✓' : '✗';
+            const stepColor = step.passed ? 'var(--green)' : 'var(--red)';
+            const stepScoreColor = step.score >= 80 ? 'var(--green)' : step.score >= 50 ? 'var(--yellow)' : 'var(--red)';
+
+            let metricsHtml = '';
+            if (step.metrics) {
+              const m = step.metrics;
+              metricsHtml = `<div class="eval-step-metrics">
+                ${m.trt_ms != null ? `<span>TRT: ${m.trt_ms}ms</span>` : ''}
+                ${m.e2e_ms != null ? `<span>E2E: ${m.e2e_ms}ms</span>` : ''}
+                ${m.ttft_ms != null ? `<span>TTFT: ${m.ttft_ms}ms</span>` : ''}
+              </div>`;
+            }
+
+            stepsHtml += `<div class="eval-step">
+              <div class="eval-step-header">
+                <span class="eval-step-name">
+                  <span style="color:${stepColor}">${stepIcon}</span>
+                  Step ${(step.step_index || 0) + 1}: ${escHtml(step.step_name || '')}
+                </span>
+                <span class="eval-step-score" style="color:${stepScoreColor}">${step.score}/100</span>
+              </div>
+              <div class="eval-step-detail">
+                <strong>Juez:</strong> ${escHtml(step.judge_category || '')}<br>
+                <strong>Feedback:</strong> ${escHtml(step.feedback || 'Sin feedback')}
+              </div>
+              <div class="eval-step-convo">
+                <p><strong style="color:var(--text-muted);">👤 Usuario:</strong> ${escHtml(step.input || '')}</p>
+                <p><strong style="color:var(--text-muted);">🤖 Agente:</strong> ${escHtml((step.response || '').substring(0, 300))}${(step.response || '').length > 300 ? '…' : ''}</p>
+              </div>
+              ${metricsHtml}
+            </div>`;
+          }
+
+          html += `<div class="eval-scenario" data-scenario-id="${escHtml(sc.id || '')}">
+            <div class="eval-scenario-header" onclick="this.parentElement.classList.toggle('expanded')">
+              <div class="eval-scenario-badge ${badgeClass}">${badge}</div>
+              <div class="eval-scenario-info">
+                <div class="eval-scenario-name">${escHtml(sc.id || '')} · ${escHtml(sc.name || '')}</div>
+                <div class="eval-scenario-meta">
+                  <span>${escHtml(sc.category || '')}</span>
+                  <span>${escHtml(sc.level || '')}</span>
+                  ${sc.hard_gate ? '<span style="color:var(--yellow)">hard gate</span>' : ''}
+                </div>
+              </div>
+              <span class="eval-scenario-score" style="color:${scoreColor}">${sc.scenario_score}%</span>
+              <span class="eval-scenario-chevron">▸</span>
+            </div>
+            <div class="eval-scenario-body">
+              ${sc.error ? `<div style="color:var(--red);font-size:0.78rem;margin-bottom:8px;">Error: ${escHtml(sc.error)}</div>` : ''}
+              ${stepsHtml}
+            </div>
+          </div>`;
+        }
+
+        evalContent.innerHTML = html;
+      }
+
+      function escHtml(s) {
+        const d = document.createElement('div');
+        d.textContent = s;
+        return d.innerHTML;
+      }
     </script>
   </body>
 </html>
