@@ -22,7 +22,7 @@ from typing import Optional
 
 import boto3
 from botocore.config import Config as BotoConfig
-from boto3.dynamodb.conditions import Key
+from boto3.dynamodb.conditions import Key, Attr
 from strands import tool
 
 from core.config import AWS_REGION
@@ -370,8 +370,14 @@ def _buscar_producto(nombre: str) -> str:
 def _buscar_cliente_dni(dni: str) -> str:
     ensure_caches()
     dni = str(dni).strip()
+    logger.info("Búsqueda DNI: '%s' (Total clientes en caché: %d)", dni, len(_customers_cache))
+    
     matches = [c for c in _customers_cache if str(c.get("dni", "")).strip() == dni]
     if not matches:
+        # Logueamos un par de ejemplos para ver el formato
+        if _customers_cache:
+            ex = _customers_cache[0].get("dni")
+            logger.warning("DNI no encontrado. Ejemplo en caché: '%s' (tipo: %s)", ex, type(ex))
         return "No pude verificar tu identidad con ese número. ¿Podrías revisarlo e intentar de nuevo?"
 
     customer_id = matches[0].get("customer_id")
@@ -476,7 +482,7 @@ def _pedidos_sesion(_: str = "") -> str:
     except Exception:
         # Fallback sin índice si falla
         resp = _tbl("orders").scan(
-            FilterExpression=Key("customer_id").eq(int(cid)),
+            FilterExpression=Attr("customer_id").eq(int(cid)),
             Limit=20
         )
         items = resp.get("Items", [])
@@ -743,6 +749,7 @@ def consultar_dynamo(operacion: str) -> str:
     Ej: "PRODUCTO:monitor lg" o "CLIENTE_DNI:12345" o "PROMOS_ACTIVAS:1"
     """
     start = time.time()
+    logger.info("Tool Call [consultar_dynamo]: %s", operacion)
 
     if ":" not in operacion:
         return f"❌ Formato inválido. Use OPERACION:valor. Operaciones: {', '.join(_OPERATIONS.keys())}"
