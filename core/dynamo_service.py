@@ -25,7 +25,7 @@ from botocore.config import Config as BotoConfig
 from boto3.dynamodb.conditions import Key
 from strands import tool
 
-from core.config import AWS_REGION, ATHENA_MAX_ROWS
+from core.config import AWS_REGION
 from core.session_context import (
     get_session_customer_id,
     set_session_customer,
