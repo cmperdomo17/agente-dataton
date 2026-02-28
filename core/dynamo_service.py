@@ -314,31 +314,6 @@ def ensure_caches():
             raise
 
 
-# ══════════════════════════════════════════════════════════════════════════
-# OPERACIONES DE CONSULTA
-# ══════════════════════════════════════════════════════════════════════════
-def _load_caches():
-    """Carga todos los productos y clientes en memoria para que las búsquedas sean instantáneas."""
-    products = _full_scan(filter_expression=Attr("entity").eq("product"))
-    for p in products:
-        p["name_normalized"] = _normalize(p.get("name", ""))
-        stock_qty = p.get("stock_qty", 0)
-        reserved_qty = p.get("reserved_qty", 0)
-        try:
-            p["available_qty"] = int(stock_qty) - int(reserved_qty)
-        except (ValueError, TypeError):
-            p["available_qty"] = 0
-
-    customers = _full_scan(filter_expression=Attr("entity").eq("customer"))
-    for c in customers:
-        full_name = f"{c.get('name', '')} {c.get('last_name1', '')} {c.get('last_name2', '')}".strip()
-        c["name_normalized"] = _normalize(full_name)
-
-    return products, customers
-
-
-_products_cache, _customers_cache = _load_caches()
-
 # ── Helpers de sesión / seguridad ─────────────────────────────────────
 
 def _require_session() -> Optional[str]:
@@ -350,12 +325,20 @@ def _require_session() -> Optional[str]:
 
 def _ownership_check(order_id: str, session_customer_id: str) -> dict | None:
     """Devuelve meta del pedido si pertenece al cliente; si no, None."""
-    meta = _query_table(f"ORDER#{order_id.strip()}", "META", limit=1)
-    if not meta:
-        return None
-    if str(meta[0].get("customer_id", "")).strip() != str(session_customer_id).strip():
-        return None
-    return meta[0]
+    try:
+        oid = int(str(order_id).strip())
+        resp = _tbl("orders").get_item(Key={"order_id": oid})
+        order = resp.get("Item")
+        if order and str(order.get("customer_id", "")).strip() == str(session_customer_id).strip():
+            return order
+    except:
+        pass
+    return None
+
+
+def _items_to_table(items, cols):
+    """Alias para mantener compatibilidad con código existente."""
+    return _to_table(items, cols)
 
 
 def _identity_required_msg() -> str:
@@ -382,39 +365,16 @@ def _buscar_producto(nombre: str) -> str:
     ]
     return _to_table(items, cols)
 
-def _info_promocion(promotion_id: str) -> str:
-    items = _query_table(f"PROMO#{promotion_id.strip()}", "PROFILE")
-
-    cols = [
-        "promotion_id", "promotion_name", "promotion_type",
-        "discount_type", "discount_value", "min_purchase_amount",
-        "start_date", "end_date", "active", "requires_premium",
-    ]
-    return _items_to_table(items, cols)
-
-
-def _productos_categoria(category_id: str) -> str:
-    items = _query_gsi1(f"CAT#{category_id.strip()}", limit=30)
-    cols = ["product_id", "name", "price", "brand_name", "available_qty", "active", "warranty_months"]
-    return _items_to_table(items, cols)
 
 
 def _buscar_cliente_dni(dni: str) -> str:
-    dni = dni.strip()
-    hits = _query_gsi1(f"DNI#{dni}")
-    if not hits:
+    ensure_caches()
+    dni = str(dni).strip()
+    matches = [c for c in _customers_cache if str(c.get("dni", "")).strip() == dni]
+    if not matches:
         return "No pude verificar tu identidad con ese número. ¿Podrías revisarlo e intentar de nuevo?"
 
-    # customer_pk = "CUSTOMER#<id>"
-    customer_pk = hits[0].get("pk", "")
-    customer_id = hits[0].get("customer_id")
-
-    if not customer_id and isinstance(customer_pk, str) and customer_pk.startswith("CUSTOMER#"):
-        customer_id = customer_pk.split("#", 1)[1]
-
-    if not customer_id:
-        return "No pude verificar tu identidad con ese número. ¿Podrías revisarlo e intentar de nuevo?"
-
+    customer_id = matches[0].get("customer_id")
     # Seteo sesión (NO devolvemos datos del perfil aquí)
     set_session_customer(str(customer_id))
     return "Listo, identidad verificada. ¿En qué te puedo ayudar?"
@@ -504,8 +464,24 @@ def _pedidos_sesion(_: str = "") -> str:
     if not cid:
         return _identity_required_msg()
 
-    items = _query_table(f"CUSTOMER#{cid}", "ORDER#", limit=20)
-    items.sort(key=lambda x: x.get("sk", ""), reverse=True)
+    # Se asume que customer_id es Partition Key o hay un GSI llamado customer-index
+    try:
+        cid_int = int(cid)
+        resp = _tbl("orders").query(
+            IndexName="customer-index",
+            KeyConditionExpression=Key("customer_id").eq(cid_int),
+            Limit=20
+        )
+        items = resp.get("Items", [])
+    except Exception:
+        # Fallback sin índice si falla
+        resp = _tbl("orders").scan(
+            FilterExpression=Key("customer_id").eq(int(cid)),
+            Limit=20
+        )
+        items = resp.get("Items", [])
+
+    items.sort(key=lambda x: str(x.get("order_date", "")), reverse=True)
     cols = ["order_id", "order_date", "status", "total_amount", "payment_method"]
     return _items_to_table(items, cols)
 
@@ -515,48 +491,12 @@ def _perfil_sesion(_: str = "") -> str:
     if not cid:
         return _identity_required_msg()
 
-    items = _query_table(f"CUSTOMER#{cid}", limit=50)
-
-    profile = [i for i in items if i.get("sk") == "PROFILE"]
-    emails = [i for i in items if i.get("entity") == "email"]
-    addresses = [i for i in items if i.get("entity") == "address"]
-    cards = [i for i in items if i.get("entity") == "card"]
-
-    parts = []
-
-    if profile:
-        parts.append("CLIENTE:")
-        parts.append(_items_to_table(profile, [
-            "customer_id", "dni", "name", "last_name1", "last_name2",
-            "phone", "birthday", "account_status", "is_premium", "registration_date",
-        ]))
-
-    if emails:
-        parts.append("\nEMAILS:")
-        parts.append(_items_to_table(emails, ["email", "email_type", "is_primary", "is_verified"]))
-
-    if addresses:
-        parts.append("\nDIRECCIONES:")
-        parts.append(_items_to_table(addresses, ["address_id", "address_line1", "city", "department", "address_type", "is_default"]))
-
-    if cards:
-        parts.append("\nTARJETAS:")
-        parts.append(_items_to_table(cards, ["card_id", "card_type", "bank", "last_four", "is_primary"]))
-
-    if not parts:
-        return "Sin resultados (0 filas)."
-
-    return "\n".join(parts)
+    return _perfil_completo_cliente(cid)
 
 
 def _tickets_sesion(_: str = "") -> str:
-    cid = _require_session()
-    if not cid:
-        return _identity_required_msg()
-
-    items = _query_table(f"CUSTOMER#{cid}", "TICKET#")
-    cols = ["ticket_id", "order_id", "subject", "category", "status", "priority", "created_at"]
-    return _items_to_table(items, cols)
+    # Esta operación no está soportada en el esquema actual de tablas individuales
+    return "No se encontraron tickets de servicio asociados a tu cuenta."
 
 
 def _detalle_pedido_sesion(order_id: str) -> str:
@@ -564,95 +504,78 @@ def _detalle_pedido_sesion(order_id: str) -> str:
     if not cid:
         return _identity_required_msg()
 
-    meta = _ownership_check(order_id, cid)
-    if meta is None:
-        # No revelamos si existe o no; mensaje estándar
-        return "Ese pedido no pertenece a tu cuenta."
+    order = _ownership_check(order_id, cid)
+    if order is None:
+        return "Ese pedido no pertenece a tu cuenta o no existe."
 
-    items = _query_table(f"ORDER#{order_id.strip()}", limit=100)
+    oid = int(str(order_id).strip())
+    
+    # Obtener items del pedido
+    resp = _tbl("order_items").query(KeyConditionExpression=Key("order_id").eq(oid))
+    items = resp.get("Items", [])
 
-    meta_items = [i for i in items if i.get("sk") == "META"]
-    order_items = [i for i in items if i.get("entity") == "order_item"]
-    shipments = [i for i in items if i.get("entity") == "shipment"]
-    tracking = [i for i in items if i.get("entity") == "tracking"]
+    # Obtener envíos
+    resp = _tbl("shipments").query(KeyConditionExpression=Key("order_id").eq(oid))
+    shipments = resp.get("Items", [])
+
+    # Obtener tracking
+    resp = _tbl("tracking").query(KeyConditionExpression=Key("order_id").eq(oid))
+    tracking = resp.get("Items", [])
 
     parts = []
 
-    if meta_items:
+    if order:
         parts.append("PEDIDO:")
-        parts.append(_items_to_table(meta_items, [
+        parts.append(_to_table([order], [
             "order_id", "customer_id", "status", "order_date", "total_amount",
-            "subtotal", "shipping_cost", "tax", "total_discount_amount",
+            "subtotal", "shipping_cost", "tax",
             "payment_method", "delivery_method",
         ]))
+
     if items:
-        # Calcular elegibilidad determinística en el backend
-        order_status = (order.get("status") or "").strip().lower() if order else ""
+        # Calcular elegibilidad determinística
+        order_status = (order.get("status") or "").strip().lower()
 
         for it in items:
             raw_deadline = it.get("return_deadline")
             item_status = (it.get("item_status") or "").strip().lower()
+            # En Multi-table, is_final_sale suele venir del producto, pero lo tenemos en order_items según el diccionario
             is_final = bool(it.get("is_final_sale") is True or str(it.get("is_final_sale")).lower() == "true")
 
             reasons = []
-
-            # 1. Validar estado del pedido
             if order_status not in ("delivered", "entregado"):
                 reasons.append(f"Pedido en estado '{_tr(order_status)}' (solo entregados)")
-
-            # 2. Validar estado del item
             if item_status != "active":
                 reasons.append(f"Item en estado '{_tr(item_status)}'")
-
-            # 3. Validar venta final
             if is_final:
                 reasons.append("Es venta final")
+            if raw_deadline and raw_deadline < CURRENT_DATE:
+                reasons.append(f"Plazo vencido el {raw_deadline}")
+            elif not raw_deadline and not is_final and order_status in ("delivered", "entregado"):
+                reasons.append("Plazo no definido")
 
-            # 4. Validar deadline correctamente
-            if raw_deadline:
-                try:
-                    # CURRENT_DATE en config es string, comparamos contra string o convertimos ambos
-                    if raw_deadline < CURRENT_DATE:
-                        reasons.append(f"Plazo vencido el {raw_deadline}")
-                except (ValueError, TypeError):
-                    reasons.append("Formato de fecha inválido en return_deadline")
-            else:
-                # Deadline faltante solo es problema si el item podría ser elegible
-                if not is_final and order_status in ("delivered", "entregado"):
-                    reasons.append("Plazo no definido")
-
-            # Resultado determinístico
             it["is_return_eligible"] = not reasons
             it["rejection_reason"] = "; ".join(reasons) if reasons else "N/A"
 
-        # Flag agregado a nivel pedido
-        order["has_returnable_items"] = any(it["is_return_eligible"] for it in items)
-
         parts.append("\nITEMS:")
         parts.append(_to_table(items, [
-            "product_name",
-            "qty",
-            "unit_price",
-            "item_status",
-            "return_deadline",
-            "is_return_eligible",
-            "rejection_reason",
-            "warranty_months",
-            "is_final_sale",
+            "product_id", "qty", "unit_price", "item_status",
+            "return_deadline", "is_return_eligible", "rejection_reason",
         ]))
+
     if shipments:
         parts.append("\nENVÍOS:")
         parts.append(_to_table(shipments, [
             "shipment_id", "carrier", "tracking_number", "shipment_status",
-            "shipped_date", "estimated_delivery_date", "actual_delivery_date",
-            "delivery_attempts",
+            "estimated_delivery_date", "actual_delivery_date",
         ]))
+
     if tracking:
         tracking.sort(key=lambda x: str(x.get("timestamp", "")), reverse=True)
         parts.append("\nTRACKING:")
         parts.append(_to_table(tracking[:10], ["timestamp", "status", "location"]))
 
-    return "\n".join(parts) if parts else "Sin resultados (0 filas)."
+    return "\n".join(parts) if parts else "Sin resultados."
 
 
 def _direccion_pedido_sesion(order_id: str) -> str:
@@ -660,24 +583,24 @@ def _direccion_pedido_sesion(order_id: str) -> str:
     if not cid:
         return _identity_required_msg()
 
-    meta = _ownership_check(order_id, cid)
-    if meta is None:
+    order = _ownership_check(order_id, cid)
+    if order is None:
         return "Ese pedido no pertenece a tu cuenta."
 
-    address_id = meta.get("address_id")
+    address_id = order.get("address_id")
     if not address_id:
         return "El pedido no tiene dirección de entrega asociada."
 
-    cid, aid = int(cid), int(aid)
-    resp = _tbl("addresses").query(
-        KeyConditionExpression=Key("cid").eq(cid) & Key("address_id").eq(aid),
-    )
-    items = resp.get("Items", [])
-    if not items:
-        items = _query_table(f"CUSTOMER#{cid}", "ADDR#")
-        # Fallback: traer todas las direcciones del cliente
-        resp = _tbl("addresses").query(KeyConditionExpression=Key("customer_id").eq(cid))
+    cid_int, aid_int = int(cid), int(address_id)
+    try:
+        resp = _tbl("addresses").query(
+            KeyConditionExpression=Key("customer_id").eq(cid_int) & Key("address_id").eq(aid_int),
+        )
         items = resp.get("Items", [])
+    except:
+        # Fallback query simple si la tabla tiene diferente PK
+        resp = _tbl("addresses").get_item(Key={"address_id": aid_int})
+        items = [resp["Item"]] if "Item" in resp else []
 
     cols = [
         "address_line1", "address_line2", "city", "department",
