@@ -406,7 +406,7 @@
       .eval-header-top {
         display: flex;
         align-items: center;
-        justify-content: space-between;
+        gap: 12px;
         margin-bottom: 8px;
       }
 
@@ -820,11 +820,11 @@
       <div class="eval-header">
         <div class="eval-header-top">
           <h2>🛡️ OmniJudge</h2>
-          <button id="eval-run-btn" aria-label="Ejecutar evaluación">
-            <span>▶</span> Evaluar
-          </button>
         </div>
         <p>Auditoría automática del agente sobre escenarios predefinidos.</p>
+        <button id="eval-run-btn" aria-label="Ejecutar evaluación" style="margin-top: 12px;">
+          <span>▶</span> Evaluar
+        </button>
       </div>
       <div class="eval-content" id="eval-content">
         <div class="eval-empty" id="eval-empty">
