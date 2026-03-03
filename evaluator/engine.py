@@ -17,6 +17,7 @@ from evaluator.judges.security_judge import SecurityJudge
 from evaluator.judges.business_judge import BusinessJudge
 from evaluator.judges.data_judge import DataJudge
 from evaluator.judges.rag_judge import RagJudge
+from evaluator.judges.memory_judge import MemoryJudge
 
 
 class EvaluationEngine:
@@ -40,7 +41,7 @@ class EvaluationEngine:
             "business": BusinessJudge(),
             "rag": RagJudge(),
             "data": DataJudge(),
-            "memory": BusinessJudge(),  # pragmatic fallback until MemoryJudge exists
+            "memory": MemoryJudge(),
         }
 
     def run_all(self) -> Dict[str, Any]:

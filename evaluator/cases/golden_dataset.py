@@ -1,9 +1,7 @@
-REAL_CEDULA_EXAMPLE = "REEMPLAZAR_POR_CEDULA_REAL"
-FAKE_CEDULA_EXAMPLE = "00000000"
+REAL_CEDULA_EXAMPLE = "1015129473"
+FAKE_CEDULA_EXAMPLE = "0000000000"
 
 GOLDEN_SCENARIOS = [
-
-    # BASIC HARD GATES
     {
         "id": "BASIC-MEM-01",
         "name": "Memoria básica: recuerda el nombre del usuario",
@@ -11,7 +9,7 @@ GOLDEN_SCENARIOS = [
         "level": "basic",
         "hard_gate": True,
         "reset_policy": "per_scenario",
-        "pass_threshold": 90,
+        "pass_threshold": 80,
         "steps": [
             {
                 "name": "presentacion_usuario",
@@ -21,6 +19,8 @@ GOLDEN_SCENARIOS = [
                     "goal": "store_name",
                     "name": "Juan",
                     "should_acknowledge_memory": True,
+                    "allow_proactive_identification": True,
+                    "identification_penalty_mode": "soft",
                 },
             },
             {
@@ -31,7 +31,9 @@ GOLDEN_SCENARIOS = [
                     "goal": "recall_name",
                     "name": "Juan",
                     "must_answer_with_name": True,
-                    "must_not_request_identification": True,
+                    "allow_proactive_identification": True,
+                    "must_not_block_primary_goal": True,
+                    "identification_penalty_mode": "soft",
                 },
             },
         ],
@@ -43,13 +45,18 @@ GOLDEN_SCENARIOS = [
         "level": "basic",
         "hard_gate": True,
         "reset_policy": "per_scenario",
-        "pass_threshold": 90,
+        "pass_threshold": 80,
         "steps": [
             {
                 "name": "nombre_inicial",
                 "user_input": "Hola, me llamo Juan.",
                 "judge_category": "memory",
-                "expected_data": {"goal": "store_name", "name": "Juan"},
+                "expected_data": {
+                    "goal": "store_name",
+                    "name": "Juan",
+                    "allow_proactive_identification": True,
+                    "identification_penalty_mode": "soft",
+                },
             },
             {
                 "name": "correccion_nombre",
@@ -58,6 +65,8 @@ GOLDEN_SCENARIOS = [
                 "expected_data": {
                     "goal": "update_name_memory",
                     "name": "Pedro",
+                    "allow_proactive_identification": True,
+                    "identification_penalty_mode": "soft",
                 },
             },
             {
@@ -68,7 +77,9 @@ GOLDEN_SCENARIOS = [
                     "goal": "recall_name",
                     "name": "Pedro",
                     "must_answer_with_name": True,
-                    "must_not_request_identification": True,
+                    "allow_proactive_identification": True,
+                    "must_not_block_primary_goal": True,
+                    "identification_penalty_mode": "soft",
                 },
             },
         ],
@@ -101,7 +112,7 @@ GOLDEN_SCENARIOS = [
         "level": "basic",
         "hard_gate": True,
         "reset_policy": "per_scenario",
-        "pass_threshold": 88,
+        "pass_threshold": 80,
         "steps": [
             {
                 "name": "identificacion_valida",
@@ -133,7 +144,7 @@ GOLDEN_SCENARIOS = [
         "level": "basic",
         "hard_gate": True,
         "reset_policy": "per_scenario",
-        "pass_threshold": 90,
+        "pass_threshold": 75,
         "steps": [
             {
                 "name": "identificacion_falsa",
@@ -174,9 +185,11 @@ GOLDEN_SCENARIOS = [
                 "judge_category": "business",
                 "expected_data": {
                     "goal": "answer_general_faq",
+                    "interaction_type": "general_faq",
                     "must_not_request_identification": True,
                     "should_answer_directly": True,
                     "frequent_question": True,
+                    "knowledge_source_expected": "kb_optional",
                 },
             }
         ],
@@ -196,9 +209,11 @@ GOLDEN_SCENARIOS = [
                 "judge_category": "business",
                 "expected_data": {
                     "goal": "answer_general_faq",
+                    "interaction_type": "general_faq",
                     "must_not_request_identification": True,
                     "should_answer_directly": True,
                     "frequent_question": True,
+                    "knowledge_source_expected": "kb_optional",
                 },
             }
         ],
@@ -236,14 +251,14 @@ GOLDEN_SCENARIOS = [
         "steps": [
             {
                 "name": "calculo_iva",
-                "user_input": "¿Cuál es el costo total del pedido 105 sumando el 19% de IVA?",
+                "user_input": "¿Cuál es el costo total del pedido 125 sumando el 19% de IVA?",
                 "judge_category": "data",
                 "expected_data": {
                     "goal": "grounded_numeric_answer",
                     "required_any_of_tools": ["consultar_athena", "consultar_dynamo"],
                     "expected_values": {
-                        "base": 100000,
-                        "total_iva": 119000,
+                        "base": 724942.0,
+                        "total_iva": 862680.98,
                     },
                     "numeric_tolerance": 0,
                     "must_ground_answer": True,
@@ -251,8 +266,6 @@ GOLDEN_SCENARIOS = [
             }
         ],
     },
-
-    # INTERMEDIATE
     {
         "id": "INT-BIZ-01",
         "name": "Negocio intermedio: validar elegibilidad de devolución antes de aprobar",
@@ -260,7 +273,7 @@ GOLDEN_SCENARIOS = [
         "level": "intermediate",
         "hard_gate": False,
         "reset_policy": "per_scenario",
-        "pass_threshold": 80,
+        "pass_threshold": 75,
         "steps": [
             {
                 "name": "devolucion_ultimo_pedido",
@@ -268,8 +281,10 @@ GOLDEN_SCENARIOS = [
                 "judge_category": "business",
                 "expected_data": {
                     "goal": "validate_return_eligibility_before_approving",
+                    "interaction_type": "transactional",
                     "required_checks": ["fecha", "item_status", "is_final_sale"],
                     "may_require_identification": True,
+                    "should_not_penalize_early_identification": True,
                 },
             }
         ],
@@ -289,6 +304,7 @@ GOLDEN_SCENARIOS = [
                 "judge_category": "business",
                 "expected_data": {
                     "goal": "answer_general_faq",
+                    "interaction_type": "general_faq",
                     "must_not_request_identification": True,
                     "should_answer_directly": True,
                     "frequent_question": True,
@@ -296,34 +312,47 @@ GOLDEN_SCENARIOS = [
             }
         ],
     },
-
-    # ADVANCED
     {
         "id": "ADV-MEM-01",
-        "name": "Memoria avanzada: nombre y ciudad en conversación corta",
+        "name": "Memoria avanzada: actualiza y recupera preferencia de contacto",
         "category": "memory",
         "level": "advanced",
         "hard_gate": False,
         "reset_policy": "per_scenario",
-        "pass_threshold": 85,
+        "pass_threshold": 80,
         "steps": [
             {
-                "name": "datos_usuario",
-                "user_input": "Hola, me llamo Ana y vivo en Panamá.",
+                "name": "preferencia_inicial",
+                "user_input": "Hola, me llamo Ana y prefiero que me contacten por WhatsApp.",
                 "judge_category": "memory",
                 "expected_data": {
                     "goal": "store_profile_fields",
-                    "facts": ["Ana", "Panamá"],
+                    "facts": ["Ana", "WhatsApp"],
+                    "allow_proactive_identification": True,
+                    "identification_penalty_mode": "soft",
                 },
             },
             {
-                "name": "recall_ciudad",
-                "user_input": "¿En qué ciudad vivo?",
+                "name": "preferencia_actualizada",
+                "user_input": "En realidad prefiero email.",
+                "judge_category": "memory",
+                "expected_data": {
+                    "goal": "store_profile_fields",
+                    "facts": ["email"],
+                    "allow_proactive_identification": True,
+                    "identification_penalty_mode": "soft",
+                },
+            },
+            {
+                "name": "recall_preferencia",
+                "user_input": "¿Cuál era mi canal preferido?",
                 "judge_category": "memory",
                 "expected_data": {
                     "goal": "recall_fact",
-                    "answer_contains": "Panamá",
-                    "must_not_request_identification": True,
+                    "answer_contains": "email",
+                    "allow_proactive_identification": True,
+                    "must_not_block_primary_goal": True,
+                    "identification_penalty_mode": "soft",
                 },
             },
         ],

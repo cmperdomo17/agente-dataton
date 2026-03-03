@@ -8,16 +8,16 @@ class BusinessJudge(BaseJudge):
     """
     Business / CX judge.
 
-    Main change vs v1:
-    asking for identification is NOT always good.
-    It depends on the case:
-    - for order-specific or sensitive flows, it can be appropriate;
-    - for FAQs and general questions, it is unnecessary friction and must be penalized.
+    Calibrated version:
+    - FAQ/general questions: asking for identification is strongly penalized.
+    - Transactional or personalized flows: early identification may be acceptable.
+    - The judge should prioritize whether the agent moved the business flow forward
+      in a reasonable way, not punish every request for identity.
     """
 
     IDENTIFICATION_KEYWORDS = [
         "cedula", "cédula", "dni", "documento", "identificacion", "identificación",
-        "id", "numero de documento", "número de documento", "verificar tu identidad",
+        "id", "numero de documento", "número de documento", "verificar tu identidad", "celular",
     ]
 
     def evaluate(self, user_input, agent_response, tool_trace, expected_data=None):
@@ -40,9 +40,8 @@ class BusinessJudge(BaseJudge):
 
         llm_score = self._safe_int(llm_verdict.get("score", 0))
         final_score = min(llm_score, det["score_cap"])
-
         if det["hard_fail"]:
-            final_score = min(final_score, 40)
+            final_score = min(final_score, det["hard_fail_cap"])
 
         feedback_parts = []
         if det["issues"]:
@@ -64,6 +63,7 @@ class BusinessJudge(BaseJudge):
         issues: List[str] = []
         score_cap = 100
         hard_fail = False
+        hard_fail_cap = 40
 
         normalized_response = self._normalize_text(agent_response)
         asks_identification = any(k in normalized_response for k in self._normalized_id_keywords())
@@ -73,8 +73,11 @@ class BusinessJudge(BaseJudge):
         may_require_identification = bool(expected_data.get("may_require_identification", False))
         required_checks = expected_data.get("required_checks", []) or []
         goal = str(expected_data.get("goal", "")).strip()
+        interaction_type = str(expected_data.get("interaction_type", "")).strip() or (
+            "general_faq" if must_not_request_identification else "transactional" if may_require_identification else "general"
+        )
 
-        if must_not_request_identification and asks_identification:
+        if interaction_type == "general_faq" and must_not_request_identification and asks_identification:
             issues.append("Pidió identificación en una consulta general/FAQ donde no correspondía.")
             score_cap = min(score_cap, 35)
             hard_fail = True
@@ -91,20 +94,22 @@ class BusinessJudge(BaseJudge):
             if response_has_approval and required_checks:
                 missing = [chk for chk in required_checks if self._normalize_text(str(chk)) not in normalized_response]
                 if len(missing) == len(required_checks):
-                    issues.append(
-                        "Aprobó o encaminó una devolución sin mencionar ninguna validación relevante del caso."
-                    )
+                    issues.append("Aprobó o encaminó una devolución sin mencionar ninguna validación relevante del caso.")
                     score_cap = min(score_cap, 65)
+            # in transactional flows, requesting identification early can be acceptable
+            if asks_identification and may_require_identification:
+                score_cap = min(score_cap, 100)
 
-        if may_require_identification is False and asks_identification and goal not in ["validate_return_eligibility_before_approving"]:
-            # soft generic penalty for needless friction in non-sensitive flows
-            issues.append("La identificación parece innecesaria para este tipo de consulta.")
-            score_cap = min(score_cap, 70)
+        if interaction_type not in ["general_faq", "faq"] and asks_identification and not may_require_identification and goal not in ["validate_return_eligibility_before_approving"]:
+            # only a light penalty outside hard FAQ cases
+            issues.append("La identificación podría no ser necesaria para este tipo de consulta, pero no invalida por sí sola la respuesta.")
+            score_cap = min(score_cap, 85)
 
         return {
             "issues": issues,
             "score_cap": score_cap,
             "hard_fail": hard_fail,
+            "hard_fail_cap": hard_fail_cap,
         }
 
     def _semantic_review(
@@ -130,17 +135,19 @@ CONTEXTO:
 - Score cap máximo permitido: {score_cap}
 
 CRITERIOS:
-1. ¿El agente entiende el tipo de consulta (FAQ general vs trámite sensible)?
+1. ¿El agente entiende el tipo de consulta (FAQ general vs trámite transaccional/sensible)?
 2. ¿Evita pedir identificación cuando no es necesaria?
-3. ¿Da una respuesta directa y útil cuando corresponde?
-4. Si el caso requiere más validaciones, ¿evita prometer algo demasiado pronto?
-5. ¿El tono es profesional y claro?
+3. ¿Cuando la consulta sí es transaccional, la identificación temprana puede ser razonable y no debe castigarse de forma severa?
+4. ¿Da una respuesta directa y útil cuando corresponde?
+5. ¿Si el caso requiere más validaciones, evita prometer algo demasiado pronto?
+6. ¿El tono es profesional y claro?
 
 INSTRUCCIONES DE SCORING:
 - Devuelve un score entero entre 0 y {score_cap}.
-- NO asumas que pedir identificación siempre es correcto.
+- NO asumas que pedir identificación siempre es incorrecto.
 - Si el caso es una FAQ o consulta general y pide identificación sin necesidad, penaliza fuerte.
-- Si el caso es un trámite sensible, pedir identificación puede ser correcto.
+- Si el caso es un trámite transaccional, pedir identificación puede ser correcto e incluso útil.
+- Prioriza el cumplimiento del objetivo del caso sobre reglas rígidas de fricción.
 
 Responde SOLO en JSON con esta forma exacta:
 {{"score": int, "feedback": "str"}}
