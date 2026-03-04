@@ -1,5 +1,7 @@
+# -*- coding: utf-8 -*-
 """
 System prompt del agente OmniRetail — VERSIÓN 3.0
+"""
 
 from core.config import CURRENT_DATE
 
