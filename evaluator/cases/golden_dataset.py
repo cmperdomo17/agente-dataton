@@ -242,8 +242,8 @@ GOLDEN_SCENARIOS = [
                     "goal": "grounded_numeric_answer",
                     "required_any_of_tools": ["consultar_athena", "consultar_dynamo"],
                     "expected_values": {
-                        "base": 100000,
-                        "total_iva": 119000,
+                        "base": 4975594,
+                        "total_iva": 5940956.86,
                     },
                     "numeric_tolerance": 0,
                     "must_ground_answer": True,
