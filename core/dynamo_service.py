@@ -236,7 +236,7 @@ def ensure_caches():
                     p["available_qty"] = 0
                 p["warehouse_location"] = st.get("warehouse_location", "")
                 p["restock_date"] = st.get("restock_date", "")
-                p["name_normalized"] = _normalize(p.get("name", ""))
+                p["name_normalized"] = normalize_text(p.get("name", ""))
 
             # Clientes con nombre normalizado para búsquedas
             _cache.customers = _scan_all("customers")
@@ -257,8 +257,8 @@ def ensure_caches():
             elapsed = time.time() - start
             logger.info(
                 "Catálogos cargados: %d productos, %d clientes, %d promos (%.1fs)",
-                len(_products_cache), len(_customers_cache),
-                len(_promotions_cache), elapsed,
+                len(_cache.products), len(_cache.customers),
+                len(_cache.promotions), elapsed,
             )
         except Exception:
             logger.exception("Error cargando catálogos desde DynamoDB")
