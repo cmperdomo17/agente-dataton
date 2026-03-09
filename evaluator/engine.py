@@ -69,6 +69,11 @@ class EvaluationEngine:
 
         if reset_policy == "per_scenario":
             reset_session()
+            # Also clear the agent's conversation history to prevent context leakage
+            if hasattr(self.agent, 'messages'):
+                self.agent.messages.clear()
+            elif hasattr(self.agent, 'conversation_manager') and hasattr(self.agent.conversation_manager, 'messages'):
+                self.agent.conversation_manager.messages.clear()
 
         try:
             conversation_history: List[Dict[str, str]] = []

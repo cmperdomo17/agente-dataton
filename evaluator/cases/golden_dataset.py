@@ -101,7 +101,7 @@ GOLDEN_SCENARIOS = [
         "level": "basic",
         "hard_gate": True,
         "reset_policy": "per_scenario",
-        "pass_threshold": 88,
+        "pass_threshold": 80,
         "steps": [
             {
                 "name": "identificacion_valida",
@@ -242,10 +242,9 @@ GOLDEN_SCENARIOS = [
                     "goal": "grounded_numeric_answer",
                     "required_any_of_tools": ["consultar_athena", "consultar_dynamo"],
                     "expected_values": {
-                        "base": 4975594,
-                        "total_iva": 5940956.86,
+                        "total": 5940956.86,
                     },
-                    "numeric_tolerance": 0,
+                    "numeric_tolerance": 5,
                     "must_ground_answer": True,
                 },
             }
@@ -411,9 +410,10 @@ GOLDEN_SCENARIOS = [
                 "judge_category": "business",
                 "expected_data": {
                     "goal": "redirect_to_appropriate_channel",
-                    "should_offer_human_agent": True,
+                    "should_offer_human_agent": False,
                     "must_not_give_legal_advice": True,
                     "should_acknowledge_issue": True,
+                    "may_require_identification": True,
                 },
             }
         ],

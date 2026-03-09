@@ -652,11 +652,13 @@ _OPERATIONS = {
 @tool
 def consultar_dynamo(operacion: str) -> str:
     """Consulta rápida a DynamoDB. Formato: OPERACION:valor.
-    Ops: PRODUCTO:<nombre>, CLIENTE_DNI:<dni>, CLIENTE_PHONE:<tel>, CLIENTE_NOMBRE:<nombre>,
+    ops: PRODUCTO:<nombre>, CLIENTE_DNI:<dni>, CLIENTE_PHONE:<tel>, CLIENTE_NOMBRE:<nombre>,
     PERFIL_CLIENTE:<cid>, PEDIDOS:<cid>, DETALLE_PEDIDO:<oid>, DIRECCION_PEDIDO:<oid>,
     PROMOCION:<pid>, PROMOS_ACTIVAS:1, PROMOS_PRODUCTO:<product_id>,
     PRODUCTOS_CAT:<catid>, STOCK:<product_id>.
     Ej: "PRODUCTO:monitor lg" o "CLIENTE_DNI:12345" o "PROMOS_ACTIVAS:1"
+    ⚠️ SEGURIDAD: ESTÁ PROHIBIDO llamar DETALLE_PEDIDO para consultar "estado" o "devolución" 
+    si el usuario NO ha sido identificado previamente con cédula o celular.
     """
     start = time.time()
 
@@ -679,10 +681,12 @@ def consultar_dynamo(operacion: str) -> str:
         elapsed_ms = (time.time() - start) * 1000
 
         # Emitir la métrica al trace estructurado para que el evaluador pueda usarla
+        # Incluir un snippet del resultado para que el juez pueda verificar grounding
+        result_snippet = result[:500] if result else ""
         add_tool_trace(
             "consultar_dynamo",
             {"operacion": operacion, "op_name": op_name, "value": value},
-            {"elapsed_ms": elapsed_ms},
+            {"elapsed_ms": elapsed_ms, "result_snippet": result_snippet},
         )
 
         logger.debug("consultar_dynamo(%s) → %.0fms", operacion, elapsed_ms)

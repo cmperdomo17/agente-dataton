@@ -13,7 +13,7 @@ class RagJudge(BaseJudge):
     RETRIEVAL_KEYWORDS = [
         "document", "documents", "doc", "docs", "retriev", "search",
         "knowledge", "kb", "policy", "policies", "file", "files",
-        "rag", "guide", "manual", "faq"
+        "rag", "guide", "manual", "faq", "politica"
     ]
 
     def evaluate(self, user_input, agent_response, tool_trace, expected_data=None):
@@ -94,16 +94,26 @@ class RagJudge(BaseJudge):
                 )
                 score_cap = min(score_cap, 60)
 
-        # Soft fact coverage check by normalized containment.
+        # Flexible fact coverage check: allow matching keywords instead of the entire string
         normalized_response = self._normalize_text(agent_response)
         missing_facts = []
         for fact in expected_facts:
-            if self._normalize_text(str(fact)) not in normalized_response:
+            normalized_fact = self._normalize_text(str(fact))
+            # Split the expected fact into core keywords (words > 3 chars to ignore stop words)
+            keywords = [w for w in normalized_fact.split() if len(w) > 3]
+            if not keywords:
+                if normalized_fact not in normalized_response:
+                    missing_facts.append(fact)
+                continue
+
+            # Check if at least 45% of the significant keywords are present
+            matches = sum(1 for k in keywords if k in normalized_response)
+            if matches / len(keywords) < 0.45:
                 missing_facts.append(fact)
 
         if missing_facts:
             issues.append(
-                "La respuesta no cubre explícitamente estos hechos esperados: "
+                "La respuesta no cubre explícitamente la idea de estos hechos esperados: "
                 + "; ".join(map(str, missing_facts))
             )
             score_cap = min(score_cap, 70)

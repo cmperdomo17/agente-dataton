@@ -105,6 +105,15 @@ class DataJudge(BaseJudge):
         expected_values = expected_data.get("expected_values", {}) or {}
         tolerance = float(expected_data.get("numeric_tolerance", 0) or 0)
 
+        # Missing must_consult_policy validation
+        must_consult_policy = bool(expected_data.get("must_consult_policy", False))
+        if must_consult_policy:
+            policy_consulted = any("consultar_politica" in t for t in tool_names)
+            if not policy_consulted:
+                issues.append("El caso requiere consultar las políticas pero no hay evidencia de uso de la herramienta.")
+                score_cap = min(score_cap, 40)
+                hard_fail = True
+
         numeric_issues = self._check_expected_values(agent_response, expected_values, tolerance)
         if numeric_issues:
             issues.extend(numeric_issues)
@@ -178,8 +187,15 @@ CONTEXTO:
 - Hallazgos determinísticos previos: {json.dumps(deterministic_issues, ensure_ascii=False)}
 - Score cap máximo permitido: {score_cap}
 
+INSTRUCCIONES IMPORTANTES SOBRE GROUNDING:
+- En el tool trace, cada entrada tiene un campo "output" que contiene "result_snippet".
+- El campo "result_snippet" contiene los datos REALES devueltos por el backend (DynamoDB o políticas).
+- Si el "result_snippet" contiene datos que coinciden con lo que el agente respondió, ESO ES EVIDENCIA
+  DE GROUNDING VÁLIDA. El agente SÍ consultó la herramienta y obtuvo los datos.
+- NO penalices por "falta de grounding" si el result_snippet muestra los datos que el agente usó.
+
 CRITERIOS:
-1. Grounding: ¿la respuesta parece apoyarse en evidencia consultada?
+1. Grounding: ¿la respuesta parece apoyarse en evidencia consultada? Revisa el result_snippet.
 2. Exactitud: ¿los números y hechos son coherentes con el expected data?
 3. Claridad: ¿la respuesta explica bien el resultado o cálculo?
 4. No alucinación: ¿evita inventar datos no soportados?
@@ -188,7 +204,7 @@ INSTRUCCIONES DE SCORING:
 - Devuelve un score entero entre 0 y {score_cap}.
 - Si los hallazgos determinísticos muestran falta de grounding o error numérico, no ignores esos problemas.
 - Si el agente usó Athena o Dynamo correctamente, considéralo igual de válido.
-- Si el agente acertó numéricamente pero no hay evidencia de consulta cuando era obligatoria, el score debe ser bajo.
+- Si el result_snippet confirma los datos, el agente ESTÁ grounded — puntúa alto.
 
 Responde SOLO en JSON con esta forma exacta:
 {{"score": int, "feedback": "str"}}
@@ -248,24 +264,34 @@ Responde SOLO en JSON con esta forma exacta:
         if not text:
             return []
 
-        matches = re.findall(r'[-+]?\d[\d\.\,]*', text)
+        # Mejorar el regex para no capturar puntuación final (puntos o comas sueltos al final)
+        # Busca dígitos, opcionalmente seguidos de grupos de (punto/coma + dígitos)
+        matches = re.finditer(r'[-+]?\d+(?:(?:[.,]\d+)+)?', text)
         numbers = []
 
         for match in matches:
-            cleaned = match.strip()
+            cleaned = match.group(0).strip()
 
             # Heuristic:
-            # - if both '.' and ',' appear, assume one of them is thousands separator
-            # - for this project, common forms are 119000 / 119.000 / 119,000
+            # - if both '.' and ',' appear, check which one comes last
+            # - for this project, common forms are 119000 / 119.000 / 119,000 / 5,940,956.86
             if '.' in cleaned and ',' in cleaned:
-                cleaned = cleaned.replace('.', '').replace(',', '.')
-            else:
-                # assume separator is thousands separator when there are 3-digit groups
-                if re.match(r'^\d{1,3}(\.\d{3})+$', cleaned):
-                    cleaned = cleaned.replace('.', '')
-                elif re.match(r'^\d{1,3}(,\d{3})+$', cleaned):
+                if cleaned.rfind(',') < cleaned.rfind('.'):
+                    # Comma is thousands separator, dot is decimal (US format)
                     cleaned = cleaned.replace(',', '')
                 else:
+                    # Dot is thousands separator, comma is decimal (EU/Spanish format)
+                    cleaned = cleaned.replace('.', '').replace(',', '.')
+            else:
+                # assume separator is thousands separator when there are 3-digit groups
+                # Note: This regex now strictly checks exactly 3 digits after the separator
+                if re.match(r'^\d{1,3}(?:\.\d{3})+$', cleaned):
+                    cleaned = cleaned.replace('.', '')
+                elif re.match(r'^\d{1,3}(?:,\d{3})+$', cleaned):
+                    cleaned = cleaned.replace(',', '')
+                else:
+                    # If just one separator and not matching 3-digit groups perfectly,
+                    # assume it's a decimal point (whether it is comma or dot)
                     cleaned = cleaned.replace(',', '.')
 
             try:

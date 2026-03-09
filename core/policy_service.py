@@ -18,6 +18,7 @@ import os
 import re
 import logging
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 
 import boto3
@@ -356,7 +357,19 @@ def consultar_politica(consulta: str) -> str:
         return "La consulta no puede estar vacía."
 
     try:
+        start = time.time()
         result = _find_relevant_sections(consulta)
+        elapsed_ms = (time.time() - start) * 1000
+        
+        # Emitir la métrica al trace estructurado para el evaluador
+        from core.session_context import add_tool_trace
+        result_snippet = result[:500] if result else ""
+        add_tool_trace(
+            "consultar_politica",
+            {"consulta": consulta},
+            {"elapsed_ms": elapsed_ms, "result_length": len(result), "result_snippet": result_snippet}
+        )
+        
         logger.debug("consultar_politica('%s') → %d caracteres", consulta, len(result))
         return result
     except Exception as e:
