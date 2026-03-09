@@ -1,0 +1,339 @@
+"""
+multi_engine.py
+───────────────
+Wrapper sobre EvaluationEngine que acepta un create_agent externo.
+
+IMPORTANTE: todos los imports de jueces y golden_dataset son DIFERIDOS
+(dentro de métodos) para evitar que importar este módulo en app_evaluator.py
+dispare la carga de core.config / boto3 antes de que el usuario presione Evaluar.
+"""
+
+import os
+import sys
+import time
+from typing import Any, Callable, Dict, List, Optional
+
+
+class MultiEngine:
+    """
+    Engine parametrizado por create_agent_fn.
+    Los jueces se importan solo cuando se instancia MultiEngine(),
+    no al importar el módulo.
+    """
+
+    def __init__(
+        self,
+        create_agent_fn: Callable,
+        pass_threshold: int = 80,
+        team_name: str = "unknown",
+    ):
+        # Imports diferidos — evita que core.config/boto3 se carguen al inicio
+        from evaluator.judges.security_judge import SecurityJudge
+        from evaluator.judges.business_judge import BusinessJudge
+        from evaluator.judges.data_judge import DataJudge
+        from evaluator.judges.rag_judge import RagJudge
+        from evaluator.judges.memory_judge import MemoryJudge
+
+        self.create_agent_fn = create_agent_fn
+        self.pass_threshold = pass_threshold
+        self.team_name = team_name
+        self.judges = {
+            "security": SecurityJudge(),
+            "business": BusinessJudge(),
+            "rag": RagJudge(),
+            "data": DataJudge(),
+            "memory": MemoryJudge(),
+        }
+
+    # ── Public API ────────────────────────────────────────────────────
+
+    def run_all(
+        self,
+        scenario_filter: Optional[List[str]] = None,
+        level_filter: Optional[List[str]] = None,
+        category_filter: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        from evaluator.cases.golden_dataset import GOLDEN_SCENARIOS
+
+        scenarios = [self._normalize_scenario(s) for s in GOLDEN_SCENARIOS]
+
+        if scenario_filter:
+            scenarios = [s for s in scenarios if s["id"] in scenario_filter]
+        if level_filter:
+            scenarios = [s for s in scenarios if s.get("level") in level_filter]
+        if category_filter:
+            scenarios = [s for s in scenarios if s.get("category") in category_filter]
+
+        scenario_results: List[Dict[str, Any]] = []
+        for scenario in scenarios:
+            scenario_results.append(self.run_scenario(scenario))
+
+        return {
+            "team_name": self.team_name,
+            "summary": self._build_summary(scenario_results),
+            "scenario_results": scenario_results,
+        }
+
+    def run_scenario(self, scenario: Dict[str, Any]) -> Dict[str, Any]:
+        from core.session_context import (
+            reset_session, get_tool_trace,
+            get_tool_trace_length, get_tool_trace_since,
+        )
+
+        reset_policy = scenario.get("reset_policy", "per_scenario")
+        step_results: List[Dict[str, Any]] = []
+        scenario_error = None
+
+        if reset_policy == "per_scenario":
+            reset_session()
+
+        try:
+            agent = self.create_agent_fn(streaming=False)
+        except Exception as e:
+            return {
+                "id": scenario["id"],
+                "name": scenario["name"],
+                "category": scenario["category"],
+                "level": scenario.get("level", "intermediate"),
+                "hard_gate": scenario.get("hard_gate", False),
+                "reset_policy": reset_policy,
+                "pass_threshold": scenario.get("pass_threshold", self.pass_threshold),
+                "passed": False,
+                "status": "error",
+                "scenario_score": 0,
+                "steps_run": 0,
+                "step_results": [],
+                "scenario_trace": [],
+                "error": f"No se pudo instanciar el agente: {e}",
+            }
+
+        try:
+            conversation_history: List[Dict[str, str]] = []
+
+            for index, step in enumerate(scenario["steps"]):
+                if reset_policy == "per_step":
+                    reset_session()
+
+                step_result = self._run_step(
+                    agent=agent,
+                    scenario=scenario,
+                    step=step,
+                    step_index=index,
+                    conversation_history=list(conversation_history),
+                )
+                step_results.append(step_result)
+
+                conversation_history.append({"role": "user", "content": step["user_input"]})
+                conversation_history.append({"role": "assistant", "content": step_result.get("response", "")})
+
+                if scenario.get("stop_on_first_failure", False) and not step_result["passed"]:
+                    break
+
+        except Exception as e:
+            scenario_error = str(e)
+
+        scenario_score = self._compute_scenario_score(step_results)
+        scenario_passed = self._scenario_passed(
+            scenario=scenario,
+            step_results=step_results,
+            scenario_error=scenario_error,
+            scenario_score=scenario_score,
+        )
+
+        status = "ok"
+        if scenario_error:
+            status = "error"
+        elif scenario.get("hard_gate") and not scenario_passed:
+            status = "failed_hard_gate"
+        elif not scenario_passed:
+            status = "failed"
+
+        return {
+            "id": scenario["id"],
+            "name": scenario["name"],
+            "category": scenario["category"],
+            "level": scenario.get("level", "intermediate"),
+            "hard_gate": scenario.get("hard_gate", False),
+            "reset_policy": reset_policy,
+            "pass_threshold": scenario.get("pass_threshold", self.pass_threshold),
+            "passed": scenario_passed,
+            "status": status,
+            "scenario_score": scenario_score,
+            "steps_run": len(step_results),
+            "step_results": step_results,
+            "scenario_trace": get_tool_trace() if reset_policy != "per_step" else None,
+            "error": scenario_error,
+        }
+
+    # ── Private methods ───────────────────────────────────────────────
+
+    def _run_step(
+        self,
+        agent,
+        scenario: Dict[str, Any],
+        step: Dict[str, Any],
+        step_index: int,
+        conversation_history: Optional[List[Dict[str, str]]] = None,
+    ) -> Dict[str, Any]:
+        from core.session_context import get_tool_trace_length, get_tool_trace_since
+
+        step_name = step.get("name", f"step_{step_index + 1}")
+        input_text = step["user_input"]
+        judge_key = step.get("judge_category") or scenario.get("judge_category") or scenario["category"]
+        judge = self.judges.get(judge_key, self.judges["business"])
+
+        trace_start = get_tool_trace_length()
+        started_at = time.perf_counter()
+        full_response = ""
+
+        try:
+            response_obj = agent(input_text)
+            full_response = getattr(response_obj, "content", str(response_obj))
+            finished_at = time.perf_counter()
+
+            step_trace = get_tool_trace_since(trace_start)
+
+            judge_kwargs = {
+                "user_input": input_text,
+                "agent_response": full_response,
+                "tool_trace": step_trace,
+                "expected_data": step.get("expected_data"),
+            }
+            if hasattr(judge, "evaluate") and "conversation_history" in judge.evaluate.__code__.co_varnames:
+                judge_kwargs["conversation_history"] = conversation_history or []
+
+            verdict = judge.evaluate(**judge_kwargs)
+            score = int(verdict.get("score", 0))
+            passed = score >= step.get("pass_threshold", scenario.get("pass_threshold", self.pass_threshold))
+
+            return {
+                "step_index": step_index,
+                "step_name": step_name,
+                "judge_category": judge_key,
+                "input": input_text,
+                "response": full_response,
+                "score": score,
+                "feedback": verdict.get("feedback", "Sin feedback"),
+                "passed": passed,
+                "status": "ok",
+                "trace": step_trace,
+                "expected_data": step.get("expected_data"),
+                "metrics": {
+                    "ttft_ms": None,
+                    "trt_ms": round((finished_at - started_at) * 1000, 2),
+                    "e2e_ms": round((finished_at - started_at) * 1000, 2),
+                },
+            }
+
+        except Exception as e:
+            finished_at = time.perf_counter()
+            return {
+                "step_index": step_index,
+                "step_name": step_name,
+                "judge_category": judge_key,
+                "input": input_text,
+                "response": full_response,
+                "score": 0,
+                "feedback": f"Error en ejecución/evaluación del step: {str(e)}",
+                "passed": False,
+                "status": "error",
+                "trace": [],
+                "expected_data": step.get("expected_data"),
+                "metrics": {
+                    "ttft_ms": None,
+                    "trt_ms": round((finished_at - started_at) * 1000, 2),
+                    "e2e_ms": round((finished_at - started_at) * 1000, 2),
+                },
+            }
+
+    def _normalize_scenario(self, scenario: Dict[str, Any]) -> Dict[str, Any]:
+        if "steps" in scenario:
+            normalized = dict(scenario)
+            normalized["steps"] = [self._normalize_step(s) for s in scenario["steps"]]
+            normalized.setdefault("level", "intermediate")
+            normalized.setdefault("reset_policy", "per_scenario")
+            normalized.setdefault("hard_gate", False)
+            normalized.setdefault("pass_threshold", self.pass_threshold)
+            return normalized
+
+        return {
+            "id": scenario["id"],
+            "name": scenario["name"],
+            "category": scenario["category"],
+            "level": scenario.get("level", "intermediate"),
+            "hard_gate": scenario.get("hard_gate", False),
+            "reset_policy": scenario.get("reset_policy", "per_scenario"),
+            "pass_threshold": scenario.get("pass_threshold", self.pass_threshold),
+            "steps": [{
+                "name": "single_step",
+                "user_input": scenario["user_input"],
+                "judge_category": scenario.get("judge_category", scenario["category"]),
+                "expected_data": scenario.get("expected_data"),
+                "pass_threshold": scenario.get("pass_threshold", self.pass_threshold),
+            }],
+        }
+
+    def _normalize_step(self, step: Dict[str, Any]) -> Dict[str, Any]:
+        normalized = dict(step)
+        normalized.setdefault("name", "unnamed_step")
+        return normalized
+
+    def _compute_scenario_score(self, step_results: List[Dict[str, Any]]) -> int:
+        if not step_results:
+            return 0
+        return round(sum(s["score"] for s in step_results) / len(step_results))
+
+    def _scenario_passed(
+        self,
+        scenario: Dict[str, Any],
+        step_results: List[Dict[str, Any]],
+        scenario_error: Optional[str],
+        scenario_score: int,
+    ) -> bool:
+        if scenario_error or not step_results:
+            return False
+        if any(s["status"] == "error" for s in step_results):
+            return False
+        if any(not s["passed"] for s in step_results):
+            return False
+        return scenario_score >= scenario.get("pass_threshold", self.pass_threshold)
+
+    def _build_summary(self, scenario_results: List[Dict[str, Any]]) -> Dict[str, Any]:
+        total = len(scenario_results)
+        passed = sum(1 for s in scenario_results if s["passed"])
+        total_steps = sum(s["steps_run"] for s in scenario_results)
+        hard_gate_failed = [
+            s["id"] for s in scenario_results
+            if s.get("hard_gate") and not s.get("passed")
+        ]
+        level_breakdown: Dict[str, Dict[str, int]] = {}
+        for s in scenario_results:
+            lv = s.get("level", "unknown")
+            level_breakdown.setdefault(lv, {"total": 0, "passed": 0})
+            level_breakdown[lv]["total"] += 1
+            if s["passed"]:
+                level_breakdown[lv]["passed"] += 1
+
+        category_breakdown: Dict[str, Dict[str, Any]] = {}
+        for s in scenario_results:
+            cat = s.get("category", "unknown")
+            category_breakdown.setdefault(cat, {"total": 0, "passed": 0, "scores": []})
+            category_breakdown[cat]["total"] += 1
+            category_breakdown[cat]["scores"].append(s["scenario_score"])
+            if s["passed"]:
+                category_breakdown[cat]["passed"] += 1
+        for cat in category_breakdown:
+            scores = category_breakdown[cat]["scores"]
+            category_breakdown[cat]["avg_score"] = round(sum(scores) / len(scores), 1) if scores else 0
+
+        return {
+            "total_scenarios": total,
+            "passed_scenarios": passed,
+            "failed_scenarios": total - passed,
+            "pass_rate": round((passed / total) * 100, 1) if total else 0,
+            "total_steps": total_steps,
+            "hard_gate_failed_ids": hard_gate_failed,
+            "disqualified": len(hard_gate_failed) > 0,
+            "level_breakdown": level_breakdown,
+            "category_breakdown": category_breakdown,
+        }
