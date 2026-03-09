@@ -25,6 +25,7 @@ from botocore.config import Config as BotoConfig
 from strands import tool
 
 from core.config import AWS_REGION, POLICY_S3_BUCKET, POLICY_S3_PREFIX, POLICY_LOCAL_DIR
+from core.utils import normalize_text
 
 logger = logging.getLogger(__name__)
 
@@ -47,16 +48,6 @@ def _get_s3_client():
             ),
         )
     return _s3_client
-
-
-# ── Normalización de texto ─────────────────────────────────────────────
-
-_ACCENT_MAP = str.maketrans("áéíóúüñÁÉÍÓÚÜÑ", "aeiouunAEIOUUN")
-
-
-def _normalize(text: str) -> str:
-    """Convierte a minúsculas sin tildes para búsquedas tolerantes."""
-    return text.lower().translate(_ACCENT_MAP).strip()
 
 
 # ── Parseo de documentos Markdown ──────────────────────────────────────
@@ -84,7 +75,7 @@ def _parse_sections(content: str, doc_name: str) -> dict[str, str]:
         if header_match:
             # Guardar sección anterior si tiene contenido
             if current_lines:
-                key = f"{doc_name}::{_normalize(current_title)}"
+                key = f"{doc_name}::{normalize_text(current_title)}"
                 text = "\n".join(current_lines).strip()
                 if text:
                     sections[key] = text
@@ -96,7 +87,7 @@ def _parse_sections(content: str, doc_name: str) -> dict[str, str]:
 
     # Guardar última sección
     if current_lines:
-        key = f"{doc_name}::{_normalize(current_title)}"
+        key = f"{doc_name}::{normalize_text(current_title)}"
         text = "\n".join(current_lines).strip()
         if text:
             sections[key] = text
@@ -212,8 +203,8 @@ def ensure_policies():
                 all_sections.append({
                     "key": key,
                     "text": text,
-                    "key_norm": _normalize(key),
-                    "text_norm": _normalize(text)
+                    "key_norm": normalize_text(key),
+                    "text_norm": normalize_text(text)
                 })
 
         _sections_cache = all_sections
@@ -317,7 +308,7 @@ def _find_relevant_sections(query: str) -> str:
     """
     ensure_policies()
 
-    query_norm = _normalize(query)
+    query_norm = normalize_text(query)
     tokens = [t for t in query_norm.split() if len(t) > 2]
 
     # Determinar documento preferido por palabras clave

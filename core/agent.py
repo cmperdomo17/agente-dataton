@@ -7,6 +7,7 @@ Crea el agente con el modelo Bedrock, el system prompt y las herramientas dispon
 import logging
 from strands import Agent
 from strands.models import BedrockModel
+from strands.agent.conversation_manager import SlidingWindowConversationManager
 
 from core.config import MODEL_ID, MODEL_TEMPERATURE, AGENT_STREAMING
 from core.dynamo_service import consultar_dynamo
@@ -34,4 +35,5 @@ def create_agent(streaming: bool | None = None) -> Agent:
         tools=[consultar_dynamo, consultar_politica],
         model=model,
         system_prompt=prompt,
+        conversation_manager=SlidingWindowConversationManager(window_size=20),
     )
