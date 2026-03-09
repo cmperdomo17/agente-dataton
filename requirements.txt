@@ -1,6 +1,6 @@
 strands-agents
 strands-agents-tools
-boto3 
-openai 
+boto3
+fastapi
+uvicorn
 python-dotenv
-streamlit

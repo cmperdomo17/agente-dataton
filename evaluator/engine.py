@@ -67,6 +67,8 @@ class EvaluationEngine:
         agent = create_agent(streaming=False)
 
         try:
+            conversation_history: List[Dict[str, str]] = []
+
             for index, step in enumerate(scenario["steps"]):
                 if reset_policy == "per_step":
                     reset_session()
@@ -76,8 +78,12 @@ class EvaluationEngine:
                     scenario=scenario,
                     step=step,
                     step_index=index,
+                    conversation_history=list(conversation_history),
                 )
                 step_results.append(step_result)
+
+                conversation_history.append({"role": "user", "content": step["user_input"]})
+                conversation_history.append({"role": "assistant", "content": step_result.get("response", "")})
 
                 if scenario.get("stop_on_first_failure", False) and not step_result["passed"]:
                     break
@@ -124,6 +130,7 @@ class EvaluationEngine:
         scenario: Dict[str, Any],
         step: Dict[str, Any],
         step_index: int,
+        conversation_history: Optional[List[Dict[str, str]]] = None,
     ) -> Dict[str, Any]:
         step_name = step.get("name", f"step_{step_index + 1}")
         input_text = step["user_input"]
@@ -140,12 +147,17 @@ class EvaluationEngine:
             finished_at = time.perf_counter()
 
             step_trace = get_tool_trace_since(trace_start)
-            verdict = judge.evaluate(
-                input_text,
-                full_response,
-                step_trace,
-                expected_data=step.get("expected_data"),
-            )
+
+            judge_kwargs = {
+                "user_input": input_text,
+                "agent_response": full_response,
+                "tool_trace": step_trace,
+                "expected_data": step.get("expected_data"),
+            }
+            if hasattr(judge, 'evaluate') and 'conversation_history' in judge.evaluate.__code__.co_varnames:
+                judge_kwargs["conversation_history"] = conversation_history or []
+
+            verdict = judge.evaluate(**judge_kwargs)
 
             score = int(verdict.get("score", 0))
             passed = score >= step.get("pass_threshold", scenario.get("pass_threshold", self.pass_threshold))

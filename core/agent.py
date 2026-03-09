@@ -8,7 +8,7 @@ import logging
 from strands import Agent
 from strands.models import BedrockModel
 
-from core.config import MODEL_ID, MODEL_TEMPERATURE
+from core.config import MODEL_ID, MODEL_TEMPERATURE, AGENT_STREAMING
 from core.dynamo_service import consultar_dynamo
 from core.policy_service import consultar_politica
 from core.prompt import build_system_prompt

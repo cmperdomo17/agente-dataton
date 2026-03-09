@@ -317,6 +317,10 @@ def _buscar_cliente_dni(dni: str) -> str:
         "phone", "account_status", "is_premium",
     ]
     return _to_table(items, cols)
+        "customer_id", "tipo_id", "dni", "name", "last_name1", "last_name2",
+        "phone", "account_status", "is_premium",
+    ]
+    return _to_table(items, cols)
 
 
 def _buscar_cliente_phone(phone: str) -> str:
@@ -324,7 +328,19 @@ def _buscar_cliente_phone(phone: str) -> str:
     ensure_caches()
     digits = re.sub(r"[^\d+]", "", phone.strip())
     items = [
+    """Busca un cliente por número de celular (coincidencia parcial de dígitos)."""
+    ensure_caches()
+    digits = re.sub(r"[^\d+]", "", phone.strip())
+    items = [
         c for c in _customers_cache
+        if digits in re.sub(r"[^\d+]", "", str(c.get("phone", "")))
+        or phone.strip() in str(c.get("phone", ""))
+    ]
+    cols = [
+        "customer_id", "tipo_id", "dni", "name", "last_name1", "last_name2",
+        "phone", "account_status", "is_premium",
+    ]
+    return _to_table(items, cols)
         if digits in re.sub(r"[^\d+]", "", str(c.get("phone", "")))
         or phone.strip() in str(c.get("phone", ""))
     ]
@@ -404,8 +420,44 @@ def _pedidos_cliente(customer_id: str) -> str:
     items = resp.get("Items", [])
     cols = ["order_id", "order_date", "status", "total_amount", "payment_method", "delivery_method"]
     return _to_table(items, cols)
+def _pedidos_cliente(customer_id: str) -> str:
+    """Lista los pedidos de un cliente, ordenados por fecha más reciente."""
+    cid = int(customer_id.strip())
+    resp = _tbl("orders").query(
+        IndexName="customer-orders-index",
+        KeyConditionExpression=Key("customer_id").eq(cid),
+        ScanIndexForward=False,
+        Limit=20,
+    )
+    items = resp.get("Items", [])
+    cols = ["order_id", "order_date", "status", "total_amount", "payment_method", "delivery_method"]
+    return _to_table(items, cols)
 
 
+def _detalle_pedido(order_id: str) -> str:
+    """Detalle completo de un pedido: resumen, ítems con producto, envíos y tracking."""
+    oid = int(order_id.strip())
+
+    resp = _tbl("orders").get_item(Key={"order_id": oid})
+    order = resp.get("Item")
+
+    # Ítems del pedido, enriquecidos con datos del producto desde caché
+    ensure_caches()
+    resp = _tbl("order_items").query(KeyConditionExpression=Key("order_id").eq(oid))
+    items = resp.get("Items", [])
+    for it in items:
+        pid = str(int(it.get("product_id", 0)))
+        prod = _product_map.get(pid, {})
+        it["product_name"] = prod.get("name", "")
+        it["warranty_months"] = prod.get("warranty_months", "")
+        it["return_days"] = prod.get("return_days", "")
+        it["is_final_sale"] = prod.get("is_final_sale", "")
+
+    resp = _tbl("shipments").query(KeyConditionExpression=Key("order_id").eq(oid))
+    shipments = resp.get("Items", [])
+
+    resp = _tbl("tracking").query(KeyConditionExpression=Key("order_id").eq(oid))
+    tracking = resp.get("Items", [])
 def _detalle_pedido(order_id: str) -> str:
     """Detalle completo de un pedido: resumen, ítems con producto, envíos y tracking."""
     oid = int(order_id.strip())
@@ -433,7 +485,11 @@ def _detalle_pedido(order_id: str) -> str:
 
     parts = []
     if order:
+    if order:
         parts.append("PEDIDO:")
+        parts.append(_to_table([order], [
+            "order_id", "customer_id", "status", "order_date",
+            "total_amount", "subtotal", "shipping_cost", "tax",
         parts.append(_to_table([order], [
             "order_id", "customer_id", "status", "order_date",
             "total_amount", "subtotal", "shipping_cost", "tax",
@@ -475,12 +531,12 @@ def _detalle_pedido(order_id: str) -> str:
                 if not is_final and order_status in ("delivered", "entregado"):
                     reasons.append("Plazo no definido")
 
-            # Resultado determinístico
-            it["is_return_eligible"] = not reasons
-            it["rejection_reason"] = "; ".join(reasons) if reasons else "N/A"
+            # Resultado determinístico — string 'Sí'/'No' para que el agente lo interprete correctamente
+            it["is_return_eligible"] = "No" if reasons else "Sí"
+            it["rejection_reason"] = "; ".join(reasons) if reasons else ""
 
         # Flag agregado a nivel pedido
-        order["has_returnable_items"] = any(it["is_return_eligible"] for it in items)
+        order["has_returnable_items"] = any(it["is_return_eligible"] == "Sí" for it in items)
 
         parts.append("\nITEMS:")
         parts.append(_to_table(items, [
@@ -520,10 +576,22 @@ def _direccion_pedido(order_id: str) -> str:
     cid = order.get("customer_id")
     aid = order.get("address_id")
     if not cid or not aid:
+def _direccion_pedido(order_id: str) -> str:
+    """Obtiene la dirección de entrega asociada a un pedido."""
+    oid = int(order_id.strip())
+    resp = _tbl("orders").get_item(Key={"order_id": oid})
+    order = resp.get("Item")
+    if not order:
+        return "No se encontró el pedido."
+
+    cid = order.get("customer_id")
+    aid = order.get("address_id")
+    if not cid or not aid:
         return "El pedido no tiene dirección de entrega asociada."
 
     cid, aid = int(cid), int(aid)
     resp = _tbl("addresses").query(
+        KeyConditionExpression=Key("customer_id").eq(cid) & Key("address_id").eq(aid),
         KeyConditionExpression=Key("customer_id").eq(cid) & Key("address_id").eq(aid),
     )
     items = resp.get("Items", [])
@@ -666,6 +734,25 @@ _OPERATIONS = {
 # ══════════════════════════════════════════════════════════════════════════
 # HERRAMIENTA PRINCIPAL DEL AGENTE
 # ══════════════════════════════════════════════════════════════════════════
+    "PRODUCTO":         _buscar_producto,
+    "CLIENTE_DNI":      _buscar_cliente_dni,
+    "CLIENTE_PHONE":    _buscar_cliente_phone,
+    "CLIENTE_NOMBRE":   _buscar_cliente_nombre,
+    "PERFIL_CLIENTE":   _perfil_completo_cliente,
+    "PEDIDOS":          _pedidos_cliente,
+    "DETALLE_PEDIDO":   _detalle_pedido,
+    "DIRECCION_PEDIDO": _direccion_pedido,
+    "PROMOCION":        _info_promocion,
+    "PROMOS_ACTIVAS":   _promos_activas,
+    "PROMOS_PRODUCTO":  _promos_producto,
+    "PRODUCTOS_CAT":    _productos_categoria,
+    "STOCK":            _consultar_stock,
+}
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# HERRAMIENTA PRINCIPAL DEL AGENTE
+# ══════════════════════════════════════════════════════════════════════════
 
 @tool
 def consultar_dynamo(operacion: str) -> str:
@@ -680,12 +767,14 @@ def consultar_dynamo(operacion: str) -> str:
 
     if ":" not in operacion:
         return f"Formato inválido. Use OPERACION:valor. Operaciones: {', '.join(_OPERATIONS.keys())}"
+        return f"Formato inválido. Use OPERACION:valor. Operaciones: {', '.join(_OPERATIONS.keys())}"
 
     op_name, _, value = operacion.partition(":")
     op_name = op_name.strip().upper()
     value = value.strip()
 
     if not value:
+        return "El valor no puede estar vacío."
         return "El valor no puede estar vacío."
 
     handler = _OPERATIONS.get(op_name)
@@ -696,7 +785,9 @@ def consultar_dynamo(operacion: str) -> str:
         result = handler(value)
         elapsed_ms = (time.time() - start) * 1000
         logger.debug("consultar_dynamo(%s) → %.0fms", operacion, elapsed_ms)
+        logger.debug("consultar_dynamo(%s) → %.0fms", operacion, elapsed_ms)
         return f"{result}\n\n[DynamoDB: {elapsed_ms:.0f}ms]"
     except Exception as e:
+        logger.exception("Error en consultar_dynamo(%s)", operacion)
         logger.exception("Error en consultar_dynamo(%s)", operacion)
         return f"Error en consulta DynamoDB: {str(e)}"
