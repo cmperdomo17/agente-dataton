@@ -13,7 +13,10 @@ class RagJudge(BaseJudge):
     RETRIEVAL_KEYWORDS = [
         "document", "documents", "doc", "docs", "retriev", "search",
         "knowledge", "kb", "policy", "policies", "file", "files",
-        "rag", "guide", "manual", "faq"
+        "rag", "guide", "manual", "faq",
+        # Spanish — nombres reales de tools del agente OmniRetail
+        "politica", "consultar_politica", "politicas",
+        "terminos", "condiciones", "garantia", "devolucion",
     ]
 
     def evaluate(self, user_input, agent_response, tool_trace, expected_data=None):
@@ -106,9 +109,16 @@ class RagJudge(BaseJudge):
                 "La respuesta no cubre explícitamente estos hechos esperados: "
                 + "; ".join(map(str, missing_facts))
             )
-            score_cap = min(score_cap, 70)
-            if must_not_hallucinate and must_use_retrieval and not retrieval_used:
+            if retrieval_used:
+                # Agent consulted the document but still gave the wrong answer —
+                # this indicates it ignored the tool output, which is a grounding failure.
+                issues.append("Usó retrieval pero la respuesta contradice o ignora el hecho esperado del documento.")
+                score_cap = min(score_cap, 40)
                 hard_fail = True
+            else:
+                score_cap = min(score_cap, 70)
+                if must_not_hallucinate and must_use_retrieval:
+                    hard_fail = True
 
         return {
             "issues": issues,

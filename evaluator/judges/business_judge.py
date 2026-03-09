@@ -13,11 +13,24 @@ class BusinessJudge(BaseJudge):
     - Transactional or personalized flows: early identification may be acceptable.
     - The judge should prioritize whether the agent moved the business flow forward
       in a reasonable way, not punish every request for identity.
+
+    FIX v2:
+    - Removed "celular" and "id" from IDENTIFICATION_KEYWORDS:
+      * "celular" caused false positives when mentioned in informational context
+        (e.g., "puedes consultar por celular al 018000...").
+      * "id" as a standalone substring matched words like "cobro indebido", "validar",
+        "direccion", etc. causing false positives.
+    - Added "confirma tu identidad" and "verificar identidad" as safer multi-word phrases.
     """
 
     IDENTIFICATION_KEYWORDS = [
-        "cedula", "cédula", "dni", "documento", "identificacion", "identificación",
-        "id", "numero de documento", "número de documento", "verificar tu identidad", "celular",
+        # Explicit identity verification requests — specific enough to avoid false positives
+        "cedula", "cédula", "dni", "documento de identidad",
+        "identificacion", "identificación",
+        "numero de documento", "número de documento",
+        "verificar tu identidad", "confirma tu identidad",
+        "numero de celular", "número de celular",   # "celular" alone is too broad
+        # NOT included: "id" (too broad), "celular" alone (too broad)
     ]
 
     def evaluate(self, user_input, agent_response, tool_trace, expected_data=None):
