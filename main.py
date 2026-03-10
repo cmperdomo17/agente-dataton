@@ -5,8 +5,6 @@ Ejecuta un loop interactivo (REPL) en la consola donde el usuario
 hace preguntas y el agente responde consultando DynamoDB.
 """
 
-import sys
-import io
 import time
 import logging
 
@@ -24,24 +22,11 @@ _CLEAR_CMDS = {"limpiar", "clear", "cls"}
 _HELP_CMDS = {"ayuda", "help"}
 
 
-def _invoke_agent(agent, query: str):
-    """Ejecuta el agente suprimiendo los mensajes intermedios de streaming.
-
-    El framework strands imprime tokens a stdout durante el streaming.
-    Redirigimos stdout temporalmente para que solo la respuesta final
-    llegue al usuario a través de nuestra interfaz visual.
-    """
-    old_stdout = sys.stdout
-    sys.stdout = io.StringIO()
-    try:
-        return agent(query)
-    finally:
-        sys.stdout = old_stdout
-
-
 def main():
     """Loop principal del agente: lee preguntas del usuario y muestra respuestas."""
-    agent = create_agent()
+    # Usamos el agente en modo no streaming para evitar imprimir tokens
+    # directamente a stdout y delegar la presentación al UI.
+    agent = create_agent(streaming=False)
     ensure_caches()
     ensure_policies()
 
@@ -79,7 +64,7 @@ def main():
             # Ejecutar consulta al agente
             ui.loading()
             start = time.time()
-            result = _invoke_agent(agent, user_input)
+            result = agent(user_input)
             elapsed = time.time() - start
 
             ui.done(elapsed)

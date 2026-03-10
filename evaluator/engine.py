@@ -12,6 +12,9 @@ from core.session_context import (
     get_tool_trace_length,
     get_tool_trace_since,
 )
+from core.dynamo_service import ensure_caches
+from core.policy_service import ensure_policies
+from evaluator.judges.base_judge import BaseJudge
 from evaluator.cases.golden_dataset import GOLDEN_SCENARIOS
 from evaluator.judges.security_judge import SecurityJudge
 from evaluator.judges.business_judge import BusinessJudge
@@ -34,15 +37,19 @@ class EvaluationEngine:
       the scenario schema.
     """
 
-    def __init__(self, pass_threshold: int = 80):
+    def __init__(self, judges: Dict[str, BaseJudge] | None = None, pass_threshold: int = 80):
         self.pass_threshold = pass_threshold
-        self.judges = {
-            "security": SecurityJudge(),
-            "business": BusinessJudge(),
-            "rag": RagJudge(),
-            "data": DataJudge(),
-            "memory": MemoryJudge(),
-        }
+
+        # Asegurar que los catálogos y políticas estén precargados también en el evaluador
+        ensure_caches()
+        ensure_policies()
+
+        # Crear una fábrica de agentes para instanciar uno nuevo por escenario
+        self.agent_factory = lambda: create_agent(streaming=False)
+        self.agent = self.agent_factory()
+
+        # Inyección de jueces; permite personalizar o mockear en tests
+        self.judges = judges or self._default_judges()
 
     def run_all(self) -> Dict[str, Any]:
         scenario_results: List[Dict[str, Any]] = []
@@ -63,8 +70,7 @@ class EvaluationEngine:
 
         if reset_policy == "per_scenario":
             reset_session()
-
-        agent = create_agent(streaming=False)
+            self.agent = self.agent_factory()
 
         try:
             conversation_history: List[Dict[str, str]] = []
@@ -74,7 +80,7 @@ class EvaluationEngine:
                     reset_session()
 
                 step_result = self.run_step(
-                    agent=agent,
+                    agent=self.agent,
                     scenario=scenario,
                     step=step,
                     step_index=index,
@@ -148,6 +154,11 @@ class EvaluationEngine:
 
             step_trace = get_tool_trace_since(trace_start)
 
+            tool_latency_ms = sum(
+                (event.get("output", {}) or {}).get("elapsed_ms", 0) for event in step_trace
+            )
+            total_ms = round((finished_at - started_at) * 1000, 2)
+
             judge_kwargs = {
                 "user_input": input_text,
                 "agent_response": full_response,
@@ -176,13 +187,19 @@ class EvaluationEngine:
                 "expected_data": step.get("expected_data"),
                 "metrics": {
                     "ttft_ms": None,
-                    "trt_ms": round((finished_at - started_at) * 1000, 2),
-                    "e2e_ms": round((finished_at - started_at) * 1000, 2),
+                    "trt_ms": total_ms,
+                    "tool_latency_ms": round(tool_latency_ms, 2),
+                    "model_latency_ms": round(total_ms - tool_latency_ms, 2),
                 },
             }
 
         except Exception as e:
             finished_at = time.perf_counter()
+            step_trace = get_tool_trace_since(trace_start)
+            tool_latency_ms = sum(
+                (event.get("output", {}) or {}).get("elapsed_ms", 0) for event in step_trace
+            )
+            total_ms = round((finished_at - started_at) * 1000, 2)
             return {
                 "step_index": step_index,
                 "step_name": step_name,
@@ -193,12 +210,13 @@ class EvaluationEngine:
                 "feedback": f"Error en ejecución/evaluación del step: {str(e)}",
                 "passed": False,
                 "status": "error",
-                "trace": get_tool_trace_since(trace_start),
+                "trace": step_trace,
                 "expected_data": step.get("expected_data"),
                 "metrics": {
                     "ttft_ms": None,
-                    "trt_ms": round((finished_at - started_at) * 1000, 2),
-                    "e2e_ms": round((finished_at - started_at) * 1000, 2),
+                    "trt_ms": total_ms,
+                    "tool_latency_ms": round(tool_latency_ms, 2),
+                    "model_latency_ms": round(total_ms - tool_latency_ms, 2),
                 },
             }
 
@@ -290,4 +308,13 @@ class EvaluationEngine:
             "hard_gate_failed_ids": hard_gate_failed,
             "disqualified": len(hard_gate_failed) > 0,
             "level_breakdown": level_breakdown,
+        }
+    def _default_judges(self) -> Dict[str, BaseJudge]:
+        """Construye el set por defecto de jueces para la evaluación."""
+        return {
+            "security": SecurityJudge(),
+            "business": BusinessJudge(),
+            "rag": RagJudge(),
+            "data": DataJudge(),
+            "memory": MemoryJudge(),
         }

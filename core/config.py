@@ -28,7 +28,7 @@ MAX_ROWS = int(os.getenv("MAX_ROWS", "20"))
 DYNAMO_PREFIX = os.getenv("DYNAMO_PREFIX", "omniretail_")
 
 # --- Modelo Bedrock ---
-MODEL_ID = os.getenv("MODEL_ID", "us.anthropic.claude-3-7-sonnet-20250219-v1:0")
+MODEL_ID = os.getenv("MODEL_ID", "us.anthropic.claude-sonnet-4-5-20250929-v1:0")
 MODEL_TEMPERATURE = float(os.getenv("MODEL_TEMPERATURE", "0.0"))
 
 # --- Rutas ---

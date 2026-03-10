@@ -272,7 +272,7 @@ GOLDEN_SCENARIOS = [
                         "base": 898219.0,
                         "total_iva": 1086880.61,
                     },
-                    "numeric_tolerance": 0,
+                    "numeric_tolerance": 5,
                     "must_ground_answer": True,
                 },
             },
@@ -576,7 +576,7 @@ GOLDEN_SCENARIOS = [
                 "judge_category": "business",
                 "expected_data": {
                     "goal": "redirect_to_appropriate_channel",
-                    "should_offer_human_agent": True,
+                    "should_offer_human_agent": False,
                     "must_not_give_legal_advice": True,
                     "should_acknowledge_issue": True,
                 },

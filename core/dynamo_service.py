@@ -15,7 +15,6 @@ import re
 import time
 import logging
 import threading
-from decimal import Decimal
 from datetime import datetime
 
 import boto3
@@ -23,6 +22,8 @@ from botocore.config import Config as BotoConfig
 from boto3.dynamodb.conditions import Key
 from strands import tool
 from core.config import AWS_REGION, DYNAMO_PREFIX, MAX_ROWS, CURRENT_DATE
+from core.session_context import add_tool_trace
+from core.utils import normalize_text, fmt_value, DynamoCache
 
 logger = logging.getLogger(__name__)
 
@@ -44,21 +45,9 @@ def _tbl(name: str):
     return _table_refs[name]
 
 
-# ── Utilidades de formato ──────────────────────────────────────────────
-
-_ACCENT_MAP = str.maketrans("áéíóúüñÁÉÍÓÚÜÑ", "aeiouunAEIOUUN")
-
-
-def _normalize(text: str) -> str:
-    """Convierte a minúsculas sin tildes para búsquedas tolerantes a errores."""
-    return text.lower().translate(_ACCENT_MAP).strip()
-
-
 def _fmt(v) -> str:
-    """Formatea valores de DynamoDB: Decimal → entero o decimal legible."""
-    if isinstance(v, Decimal):
-        return str(int(v)) if v == v.to_integral_value() else str(v)
-    return "" if v is None else str(v)
+    """Alias local a la función de formateo común."""
+    return fmt_value(v)
 
 
 # Traducción de columnas técnicas → español para el usuario
@@ -196,14 +185,7 @@ def _scan_all(table_name: str) -> list[dict]:
 # ── Caché lazy (se carga una sola vez, con thread-safety) ──────────────
 
 _cache_lock = threading.Lock()
-_cache_loaded = False
-
-_cats_cache: dict = {}
-_brands_cache: dict = {}
-_products_cache: list = []
-_customers_cache: list = []
-_promotions_cache: list = []
-_product_map: dict = {}
+_cache = DynamoCache()
 
 
 def ensure_caches():
@@ -212,14 +194,13 @@ def ensure_caches():
     Usa un lock para evitar cargas duplicadas en entornos multi-hilo.
     Si DynamoDB falla, se registra el error y se re-lanza la excepción.
     """
-    global _cache_loaded, _cats_cache, _brands_cache
-    global _products_cache, _customers_cache, _promotions_cache, _product_map
+    global _cache
 
-    if _cache_loaded:
+    if _cache.loaded:
         return
 
     with _cache_lock:
-        if _cache_loaded:  # Double-check dentro del lock
+        if _cache.loaded:  # Double-check dentro del lock
             return
 
         logger.info("Cargando catálogos desde DynamoDB...")
@@ -227,11 +208,11 @@ def ensure_caches():
 
         try:
             # Catálogos pequeños
-            _cats_cache = {
+            _cache.cats = {
                 str(int(c["category_id"])): c.get("name", "")
                 for c in _scan_all("categories")
             }
-            _brands_cache = {
+            _cache.brands = {
                 str(int(b["brand_id"])): b.get("name", "")
                 for b in _scan_all("brands")
             }
@@ -241,11 +222,11 @@ def ensure_caches():
             }
 
             # Productos enriquecidos con stock, categoría y marca
-            _products_cache = _scan_all("products")
-            for p in _products_cache:
+            _cache.products = _scan_all("products")
+            for p in _cache.products:
                 pid = str(int(p.get("product_id", 0)))
-                p["category_name"] = _cats_cache.get(str(int(p.get("category_id", 0))), "")
-                p["brand_name"] = _brands_cache.get(str(int(p.get("brand_id", 0))), "")
+                p["category_name"] = _cache.cats.get(str(int(p.get("category_id", 0))), "")
+                p["brand_name"] = _cache.brands.get(str(int(p.get("brand_id", 0))), "")
                 st = stock_map.get(pid, {})
                 p["stock_qty"] = st.get("stock_qty", 0)
                 p["reserved_qty"] = st.get("reserved_qty", 0)
@@ -255,29 +236,29 @@ def ensure_caches():
                     p["available_qty"] = 0
                 p["warehouse_location"] = st.get("warehouse_location", "")
                 p["restock_date"] = st.get("restock_date", "")
-                p["name_normalized"] = _normalize(p.get("name", ""))
+                p["name_normalized"] = normalize_text(p.get("name", ""))
 
             # Clientes con nombre normalizado para búsquedas
-            _customers_cache = _scan_all("customers")
-            for c in _customers_cache:
+            _cache.customers = _scan_all("customers")
+            for c in _cache.customers:
                 full = f"{c.get('name', '')} {c.get('last_name1', '')} {c.get('last_name2', '')}".strip()
-                c["name_normalized"] = _normalize(full)
+                c["name_normalized"] = normalize_text(full)
 
             # Promociones
-            _promotions_cache = _scan_all("promotions")
+            _cache.promotions = _scan_all("promotions")
 
             # Mapa rápido product_id → producto enriquecido
-            _product_map = {
+            _cache.product_map = {
                 str(int(p["product_id"])): p
-                for p in _products_cache if "product_id" in p
+                for p in _cache.products if "product_id" in p
             }
 
-            _cache_loaded = True
+            _cache.loaded = True
             elapsed = time.time() - start
             logger.info(
                 "Catálogos cargados: %d productos, %d clientes, %d promos (%.1fs)",
-                len(_products_cache), len(_customers_cache),
-                len(_promotions_cache), elapsed,
+                len(_cache.products), len(_cache.customers),
+                len(_cache.promotions), elapsed,
             )
         except Exception:
             logger.exception("Error cargando catálogos desde DynamoDB")
@@ -291,13 +272,13 @@ def ensure_caches():
 def _buscar_producto(nombre: str) -> str:
     """Busca productos cuyo nombre contenga todos los términos indicados."""
     ensure_caches()
-    term = _normalize(nombre)
+    term = normalize_text(nombre)
     tokens = term.split()
     # Primero intenta coincidencia con todos los tokens
-    items = [p for p in _products_cache if all(t in p.get("name_normalized", "") for t in tokens)]
+    items = [p for p in _cache.products if all(t in p.get("name_normalized", "") for t in tokens)]
     # Si no hay resultados y hay múltiples tokens, relaja la búsqueda
     if not items and len(tokens) > 1:
-        items = [p for p in _products_cache if any(t in p.get("name_normalized", "") for t in tokens)]
+        items = [p for p in _cache.products if any(t in p.get("name_normalized", "") for t in tokens)]
     cols = [
         "product_id", "name", "price", "active", "available_qty",
         "stock_qty", "reserved_qty", "restock_date",
@@ -311,7 +292,7 @@ def _buscar_cliente_dni(dni: str) -> str:
     """Busca un cliente por número de documento (cédula)."""
     ensure_caches()
     d = dni.strip()
-    items = [c for c in _customers_cache if str(c.get("dni", "")) == d]
+    items = [c for c in _cache.customers if str(c.get("dni", "")) == d]
     cols = [
         "customer_id", "tipo_id", "dni", "name", "last_name1", "last_name2",
         "phone", "account_status", "is_premium",
@@ -324,7 +305,7 @@ def _buscar_cliente_phone(phone: str) -> str:
     ensure_caches()
     digits = re.sub(r"[^\d+]", "", phone.strip())
     items = [
-        c for c in _customers_cache
+        c for c in _cache.customers
         if digits in re.sub(r"[^\d+]", "", str(c.get("phone", "")))
         or phone.strip() in str(c.get("phone", ""))
     ]
@@ -338,13 +319,13 @@ def _buscar_cliente_phone(phone: str) -> str:
 def _buscar_cliente_nombre(nombre: str) -> str:
     """Busca clientes cuyo nombre completo contenga todos los términos."""
     ensure_caches()
-    term = _normalize(nombre)
+    term = normalize_text(nombre)
     tokens = term.split()
-    items = [c for c in _customers_cache if all(t in c.get("name_normalized", "") for t in tokens)]
+    items = [c for c in _cache.customers if all(t in c.get("name_normalized", "") for t in tokens)]
     # Relajar: aceptar si coinciden N-1 de N tokens
     if not items and len(tokens) > 1:
         items = [
-            c for c in _customers_cache
+            c for c in _cache.customers
             if sum(1 for t in tokens if t in c.get("name_normalized", "")) >= len(tokens) - 1
         ]
     cols = [
@@ -419,7 +400,7 @@ def _detalle_pedido(order_id: str) -> str:
     items = resp.get("Items", [])
     for it in items:
         pid = str(int(it.get("product_id", 0)))
-        prod = _product_map.get(pid, {})
+        prod = _cache.product_map.get(pid, {})
         it["product_name"] = prod.get("name", "")
         it["warranty_months"] = prod.get("warranty_months", "")
         it["return_days"] = prod.get("return_days", "")
@@ -551,7 +532,7 @@ def _info_promocion(promotion_id: str) -> str:
     ensure_caches()
     cats = str(item.get("applicable_category_ids", ""))
     if cats:
-        names = [_cats_cache.get(c.strip(), c.strip()) for c in cats.split("|") if c.strip()]
+        names = [_cache.cats.get(c.strip(), c.strip()) for c in cats.split("|") if c.strip()]
         item["_cat_names"] = ", ".join(names)
     cols = [
         "promotion_id", "promotion_name", "description",
@@ -565,7 +546,7 @@ def _info_promocion(promotion_id: str) -> str:
 def _promos_activas(_value: str) -> str:
     """Lista todas las promociones marcadas como activas."""
     ensure_caches()
-    activas = [p for p in _promotions_cache if str(p.get("active", "")).lower() == "true"]
+    activas = [p for p in _cache.promotions if str(p.get("active", "")).lower() == "true"]
     cols = [
         "promotion_id", "promotion_name", "discount_type", "discount_value",
         "min_purchase_amount", "start_date", "end_date",
@@ -578,13 +559,13 @@ def _promos_producto(product_id: str) -> str:
     """Encuentra promociones activas aplicables a un producto (por ID o categoría)."""
     ensure_caches()
     pid = product_id.strip()
-    prod = _product_map.get(pid)
+    prod = _cache.product_map.get(pid)
     if not prod:
         return f"Producto {pid} no encontrado."
 
     cat_id = str(int(prod.get("category_id", 0)))
     matching = []
-    for p in _promotions_cache:
+    for p in _cache.promotions:
         if str(p.get("active", "")).lower() != "true":
             continue
         app_prods = str(p.get("applicable_product_ids", ""))
@@ -616,7 +597,7 @@ def _productos_categoria(category_id: str) -> str:
     items = resp.get("Items", [])
     for p in items:
         pid = str(int(p.get("product_id", 0)))
-        cached = _product_map.get(pid, {})
+        cached = _cache.product_map.get(pid, {})
         p["available_qty"] = cached.get("available_qty", "")
         p["brand_name"] = cached.get("brand_name", "")
     cols = [
@@ -630,7 +611,7 @@ def _consultar_stock(product_id: str) -> str:
     """Muestra el stock detallado de un producto específico."""
     ensure_caches()
     pid = product_id.strip()
-    prod = _product_map.get(pid)
+    prod = _cache.product_map.get(pid)
     if not prod:
         return f"Producto {pid} no encontrado."
     cols = [
@@ -670,11 +651,13 @@ _OPERATIONS = {
 @tool
 def consultar_dynamo(operacion: str) -> str:
     """Consulta rápida a DynamoDB. Formato: OPERACION:valor.
-    Ops: PRODUCTO:<nombre>, CLIENTE_DNI:<dni>, CLIENTE_PHONE:<tel>, CLIENTE_NOMBRE:<nombre>,
+    ops: PRODUCTO:<nombre>, CLIENTE_DNI:<dni>, CLIENTE_PHONE:<tel>, CLIENTE_NOMBRE:<nombre>,
     PERFIL_CLIENTE:<cid>, PEDIDOS:<cid>, DETALLE_PEDIDO:<oid>, DIRECCION_PEDIDO:<oid>,
     PROMOCION:<pid>, PROMOS_ACTIVAS:1, PROMOS_PRODUCTO:<product_id>,
     PRODUCTOS_CAT:<catid>, STOCK:<product_id>.
     Ej: "PRODUCTO:monitor lg" o "CLIENTE_DNI:12345" o "PROMOS_ACTIVAS:1"
+    ⚠️ SEGURIDAD: ESTÁ PROHIBIDO llamar DETALLE_PEDIDO para consultar "estado" o "devolución" 
+    si el usuario NO ha sido identificado previamente con cédula o celular.
     """
     start = time.time()
 
@@ -695,8 +678,18 @@ def consultar_dynamo(operacion: str) -> str:
     try:
         result = handler(value)
         elapsed_ms = (time.time() - start) * 1000
+
+        # Emitir la métrica al trace estructurado para que el evaluador pueda usarla
+        # Incluir un snippet del resultado para que el juez pueda verificar grounding
+        result_snippet = result[:500] if result else ""
+        add_tool_trace(
+            "consultar_dynamo",
+            {"operacion": operacion, "op_name": op_name, "value": value},
+            {"elapsed_ms": elapsed_ms, "result_snippet": result_snippet},
+        )
+
         logger.debug("consultar_dynamo(%s) → %.0fms", operacion, elapsed_ms)
-        return f"{result}\n\n[DynamoDB: {elapsed_ms:.0f}ms]"
+        return result
     except Exception as e:
         logger.exception("Error en consultar_dynamo(%s)", operacion)
         return f"Error en consulta DynamoDB: {str(e)}"

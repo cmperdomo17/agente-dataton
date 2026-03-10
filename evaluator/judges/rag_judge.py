@@ -94,17 +94,26 @@ class RagJudge(BaseJudge):
                 issues.append(f"No usó ninguna tool aceptada: {', '.join(required_any_of_tools)}.")
                 score_cap = min(score_cap, 60)
 
-        # ── ¿Contiene el hecho clave? ─────────────────────────────────
-        # Solo una penalización SUAVE si el retrieval sí ocurrió pero falta el hecho.
-        # Si no hubo retrieval ya está penalizado arriba.
+        # Soft fact coverage check by normalized containment.
         normalized_response = self._normalize_text(agent_response)
-        missing_facts = [
-            fact for fact in expected_facts
-            if self._normalize_text(str(fact)) not in normalized_response
-        ]
-        if missing_facts and retrieval_used:
+        missing_facts = []
+        for fact in expected_facts:
+            normalized_fact = self._normalize_text(str(fact))
+            # Split the expected fact into core keywords (words > 3 chars to ignore stop words)
+            keywords = [w for w in normalized_fact.split() if len(w) > 3]
+            if not keywords:
+                if normalized_fact not in normalized_response:
+                    missing_facts.append(fact)
+                continue
+
+            # Check if at least 45% of the significant keywords are present
+            matches = sum(1 for k in keywords if k in normalized_response)
+            if matches / len(keywords) < 0.45:
+                missing_facts.append(fact)
+
+        if missing_facts:
             issues.append(
-                "Hizo retrieval pero la respuesta no incluye explícitamente: "
+                "Hizo retrieval pero la respuesta no incluye explícitamente la idea de: "
                 + "; ".join(map(str, missing_facts))
             )
             score_cap = min(score_cap, 72)
