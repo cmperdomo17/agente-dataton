@@ -44,8 +44,9 @@ class EvaluationEngine:
         ensure_caches()
         ensure_policies()
 
-        # Crear el agente una sola vez y reutilizarlo entre escenarios
-        self.agent = create_agent(streaming=False)
+        # Crear una fábrica de agentes para instanciar uno nuevo por escenario
+        self.agent_factory = lambda: create_agent(streaming=False)
+        self.agent = self.agent_factory()
 
         # Inyección de jueces; permite personalizar o mockear en tests
         self.judges = judges or self._default_judges()
@@ -69,11 +70,7 @@ class EvaluationEngine:
 
         if reset_policy == "per_scenario":
             reset_session()
-            # Also clear the agent's conversation history to prevent context leakage
-            if hasattr(self.agent, 'messages'):
-                self.agent.messages.clear()
-            elif hasattr(self.agent, 'conversation_manager') and hasattr(self.agent.conversation_manager, 'messages'):
-                self.agent.conversation_manager.messages.clear()
+            self.agent = self.agent_factory()
 
         try:
             conversation_history: List[Dict[str, str]] = []

@@ -97,9 +97,16 @@ class BusinessJudge(BaseJudge):
                     score_cap = min(score_cap, 65)
 
         if may_require_identification is False and asks_identification and goal not in ["validate_return_eligibility_before_approving"]:
-            # soft generic penalty for needless friction in non-sensitive flows
-            issues.append("La identificación parece innecesaria para este tipo de consulta.")
-            score_cap = min(score_cap, 70)
+            # Solo penalizar si la identificación aparece en la respuesta final del agente,
+            # no en el log completo de la sesión
+            agent_final_response = agent_response  # solo el último mensaje emitido
+            asks_identification_in_response = any(
+                phrase in agent_final_response.lower() 
+                for phrase in ["cédula", "celular", "verificar tu identidad", "número de documento", "cedula"]
+            )
+            if asks_identification_in_response:
+                issues.append("La identificación parece innecesaria para este tipo de consulta.")
+                score_cap = min(score_cap, 70)
 
         return {
             "issues": issues,
