@@ -1,23 +1,3 @@
-"""
-submission_loader.py
-────────────────────
-Carga, valida e instancia agentes desde ZIPs de equipos participantes.
-
-Cada ZIP debe tener la siguiente estructura mínima:
-    <cualquier_carpeta_raíz>/
-        core/
-            agent.py        ← contiene create_agent(streaming: bool) -> Agent
-
-El loader:
-  1. Extrae el ZIP en un directorio temporal aislado.
-  2. Valida que el contrato de integración esté presente.
-  3. Agrega el root del equipo a sys.path de forma PERMANENTE para que
-     los imports relativos (core.config, core.session_context, etc.)
-     funcionen en tiempo de ejecución, no solo durante el import.
-  4. Importa create_agent dinámicamente sin contaminar otros equipos.
-  5. Devuelve un SubmissionInfo con estado, agente instanciado y errores.
-"""
-
 import importlib
 import importlib.util
 import os
@@ -131,12 +111,14 @@ class SubmissionLoader:
         # Step 4: inject our session_context if team doesn't have one
         _ensure_session_context(root_dir)
 
-        # Step 5: inject team root into sys.path PERMANENTLY
-        # This must persist beyond the import so that runtime imports like
-        # `from core.config import ...` keep working when the agent is called.
+        # Step 5: PURGAR módulos del equipo anterior antes de inyectar el nuevo path
+        # Esto evita que sys.modules devuelva core.session_context del equipo anterior
+        _purge_team_modules(root_dir)
+
+        # Step 6: inject team root into sys.path
         _inject_path_permanently(root_dir)
 
-        # Step 6: dynamic import
+        # Step 7: dynamic import
         try:
             sub._create_agent_fn = _dynamic_import_create_agent(root_dir, team_name)
         except Exception as e:
@@ -233,27 +215,61 @@ def _ensure_session_context(root_dir: Path):
         shutil.copy(our_session_context, target)
 
 
+def _purge_team_modules(incoming_root: Path):
+    """
+    Elimina de sys.modules todos los módulos del namespace 'core.*'
+    que NO pertenezcan al equipo entrante.
+
+    Esto es necesario porque Python cachea módulos en sys.modules por nombre.
+    Sin esta limpieza, cuando el Equipo B se carga después del Equipo A:
+      - 'core.session_context' en sys.modules todavía apunta al código del Equipo A
+      - El agente del Equipo B escribe traces en la instancia del Equipo A
+      - El evaluador lee un trace vacío o del equipo equivocado
+
+    También se eliminan módulos 'core' sin prefijo que hayan quedado de
+    un equipo anterior o de la carga previa del agente propio.
+    """
+    incoming_core = str(incoming_root / "core")
+
+    modules_to_remove = []
+    for mod_name, mod in list(sys.modules.items()):
+        if not (mod_name == "core" or mod_name.startswith("core.")):
+            continue
+        # Si el módulo tiene __file__ y es de otro path → purgar
+        mod_file = getattr(mod, "__file__", None) or ""
+        if mod_file and incoming_core not in mod_file:
+            modules_to_remove.append(mod_name)
+        # Si no tiene __file__ (módulo built o namespace) → purgar igual
+        elif not mod_file:
+            modules_to_remove.append(mod_name)
+
+    for mod_name in modules_to_remove:
+        del sys.modules[mod_name]
+
+    if modules_to_remove:
+        print(f"  [loader] Purgados {len(modules_to_remove)} módulos cacheados: {modules_to_remove[:5]}{'...' if len(modules_to_remove) > 5 else ''}")
+
+
 def _inject_path_permanently(root_dir: Path):
     """
-    Add the team's root directory to sys.path permanently.
+    Agrega el root del equipo a sys.path[0].
 
-    Unlike a temporary injection (with finally: sys.path.remove(...)),
-    this keeps the path available for ALL runtime imports — including
-    `from core.config import ...` that happen when the agent is called,
-    not just when its module is first loaded.
-
-    Each team gets its own entry. If two teams have conflicting module names,
-    the last-loaded team wins — acceptable for sequential evaluation.
+    Se inserta al frente para que los imports de 'core.*' del equipo
+    tengan prioridad sobre cualquier 'core.*' de otro equipo que
+    haya quedado en un path más profundo.
     """
     root_str = str(root_dir)
-    if root_str not in sys.path:
-        sys.path.insert(0, root_str)
+    # Remover si ya estaba (podría estar en posición no-0)
+    if root_str in sys.path:
+        sys.path.remove(root_str)
+    # Insertar al frente
+    sys.path.insert(0, root_str)
 
 
 def _dynamic_import_create_agent(root_dir: Path, team_name: str) -> Callable:
     """
-    Dynamically import create_agent from a team's core/agent.py.
-    The team's root must already be in sys.path (done by _inject_path_permanently).
+    Importa create_agent dinámicamente desde core/agent.py del equipo.
+    El root del equipo ya debe estar en sys.path[0].
     """
     agent_path = root_dir / "core" / "agent.py"
     module_name = f"team_{team_name}_core_agent"

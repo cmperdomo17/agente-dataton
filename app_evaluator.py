@@ -499,16 +499,26 @@ with tab_submissions:
                        + ", ".join(z.stem for z in zip_files))
 
             # ── Load & validate all submissions ───────────────────────
-            if st.button("🔍 Cargar y validar submissions", key="load_subs"):
+            col_load, col_reload = st.columns([4, 1])
+            if col_load.button("🔍 Cargar y validar submissions", key="load_subs"):
                 from submission_loader import SubmissionLoader
                 loader = SubmissionLoader(submissions_dir=submissions_dir)
                 with st.spinner("Cargando submissions..."):
-                    submissions = loader.load_all()
-                st.session_state["submissions"] = submissions
+                    loaded = loader.load_all()
+                st.session_state["submissions"] = loaded
+                st.session_state.pop("selected_teams_val", None)  # reset selección
+
+            if col_reload.button("🔄", key="reload_subs", help="Limpiar y recargar"):
+                st.session_state.pop("submissions", None)
+                st.session_state.pop("selected_teams_val", None)
+                st.session_state.pop("sub_results", None)
+                st.rerun()
 
             submissions = st.session_state.get("submissions", [])
 
-            if submissions:
+            if not submissions:
+                st.info("Presioná **Cargar y validar submissions** para comenzar.")
+            else:
                 st.subheader("📋 Estado de los submissions")
                 status_rows = []
                 for sub in submissions:
@@ -536,48 +546,76 @@ with tab_submissions:
                                     st.caption(f"  ✗ {c.name}: {c.detail}")
 
                 if ready_subs:
-                    # ── Team selector ─────────────────────────────────
+                    # ── Team selector — selección persiste entre reruns ─
                     team_names = [s.team_name for s in ready_subs]
+                    if "selected_teams_val" not in st.session_state:
+                        st.session_state["selected_teams_val"] = team_names
+
                     selected_teams = st.multiselect(
                         "Seleccioná qué equipos evaluar:",
                         options=team_names,
-                        default=team_names,
+                        default=st.session_state["selected_teams_val"],
                         key="selected_teams",
                     )
+                    st.session_state["selected_teams_val"] = selected_teams
 
                     col_run, col_clear = st.columns([3, 1])
+                    n_sel = len(selected_teams)
                     run_btn = col_run.button(
-                        f"▶️ Evaluar {len(selected_teams)} equipo(s)",
+                        f"▶️ Evaluar {n_sel} equipo(s)" if n_sel > 0 else "▶️ Evaluar (seleccioná equipos arriba)",
                         key="run_subs",
-                        disabled=len(selected_teams) == 0,
+                        type="primary",
+                        disabled=n_sel == 0,
                     )
                     if col_clear.button("🗑️ Limpiar resultados", key="clear_results"):
                         st.session_state.pop("sub_results", None)
                         st.rerun()
 
-                    if run_btn:
+                    if run_btn and n_sel > 0:
+                        import traceback as _tb
                         from multi_engine import MultiEngine
+
+                        # Resolver session_context del PROYECTO antes de cargar ZIPs
+                        import importlib, sys as _sys
+                        _sc = importlib.import_module("core.session_context")
+                        _session_fns = {
+                            "reset_session":         _sc.reset_session,
+                            "get_tool_trace":        _sc.get_tool_trace,
+                            "get_tool_trace_length": _sc.get_tool_trace_length,
+                            "get_tool_trace_since":  _sc.get_tool_trace_since,
+                        }
+
                         sub_results: Dict[str, Any] = {}
                         to_evaluate = [s for s in ready_subs if s.team_name in selected_teams]
 
+                        print(f"[eval] Iniciando evaluación de {len(to_evaluate)} equipos")
                         progress = st.progress(0, text="Iniciando evaluación...")
+                        status_box = st.empty()
+
                         for i, sub in enumerate(to_evaluate):
                             progress.progress(
-                                (i) / len(to_evaluate),
+                                i / len(to_evaluate),
                                 text=f"Evaluando {sub.team_name} ({i+1}/{len(to_evaluate)})..."
                             )
+                            status_box.info(f"⏳ Evaluando **{sub.team_name}**...")
+                            print(f"[eval] → {sub.team_name} ready={sub.ready}")
                             try:
                                 engine = MultiEngine(
                                     create_agent_fn=sub.create_agent,
                                     team_name=sub.team_name,
+                                    session_fns=_session_fns,
                                 )
                                 result = engine.run_all(
                                     level_filter=selected_levels if selected_levels else None,
                                     category_filter=selected_categories if selected_categories else None,
                                 )
                                 sub_results[sub.team_name] = result
+                                print(f"[eval] ✓ {sub.team_name} completado")
                             except Exception as e:
-                                st.error(f"Error evaluando {sub.team_name}: {e}")
+                                err_detail = _tb.format_exc()
+                                print(f"[eval] ✗ {sub.team_name} ERROR:\n{err_detail}")
+                                st.error(f"Error evaluando **{sub.team_name}**: {e}")
+                                st.code(err_detail)
                                 sub_results[sub.team_name] = {
                                     "team_name": sub.team_name,
                                     "summary": {},
@@ -586,6 +624,7 @@ with tab_submissions:
                                 }
 
                         progress.progress(1.0, text="✅ Evaluación completa")
+                        status_box.success("✅ Evaluación completa")
                         st.session_state["sub_results"] = sub_results
                         st.rerun()
 

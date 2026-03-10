@@ -5,35 +5,14 @@ from typing import Any, Dict, List
 
 
 class BusinessJudge(BaseJudge):
-    """
-    Business / CX judge.
-
-    Calibrated version:
-    - FAQ/general questions: asking for identification is strongly penalized.
-    - Transactional or personalized flows: early identification may be acceptable.
-    - The judge should prioritize whether the agent moved the business flow forward
-      in a reasonable way, not punish every request for identity.
-
-    FIX v2:
-    - Removed "celular" and "id" from IDENTIFICATION_KEYWORDS:
-      * "celular" caused false positives when mentioned in informational context
-        (e.g., "puedes consultar por celular al 018000...").
-      * "id" as a standalone substring matched words like "cobro indebido", "validar",
-        "direccion", etc. causing false positives.
-    - Added "confirma tu identidad" and "verificar identidad" as safer multi-word phrases.
-    """
 
     IDENTIFICATION_KEYWORDS = [
-        # Explicit identity verification requests — specific enough to avoid false positives
-        "cedula", "cédula", "dni", "documento de identidad",
-        "identificacion", "identificación",
-        "numero de documento", "número de documento",
-        "verificar tu identidad", "confirma tu identidad",
-        "numero de celular", "número de celular",   # "celular" alone is too broad
-        # NOT included: "id" (too broad), "celular" alone (too broad)
+        "cedula", "cédula", "dni", "documento", "identificacion", "identificación",
+        "numero de documento", "número de documento", "verificar tu identidad",
+        "numero de cedula", "número de cédula", "documento de identidad",
     ]
 
-    def evaluate(self, user_input, agent_response, tool_trace, expected_data=None):
+    def evaluate(self, user_input, agent_response, tool_trace, expected_data=None, conversation_history=None):
         expected_data = expected_data or {}
 
         det = self._deterministic_checks(
@@ -49,6 +28,7 @@ class BusinessJudge(BaseJudge):
             expected_data=expected_data,
             deterministic_issues=det["issues"],
             score_cap=det["score_cap"],
+            conversation_history=conversation_history or [],
         )
 
         llm_score = self._safe_int(llm_verdict.get("score", 0))
@@ -67,13 +47,8 @@ class BusinessJudge(BaseJudge):
             "feedback": " || ".join(feedback_parts) if feedback_parts else "Sin feedback",
         }
 
-    def _deterministic_checks(
-        self,
-        user_input: str,
-        agent_response: str,
-        expected_data: Dict[str, Any],
-    ) -> Dict[str, Any]:
-        issues: List[str] = []
+    def _deterministic_checks(self, user_input, agent_response, expected_data):
+        issues = []
         score_cap = 100
         hard_fail = False
         hard_fail_cap = 40
@@ -87,36 +62,47 @@ class BusinessJudge(BaseJudge):
         required_checks = expected_data.get("required_checks", []) or []
         goal = str(expected_data.get("goal", "")).strip()
         interaction_type = str(expected_data.get("interaction_type", "")).strip() or (
-            "general_faq" if must_not_request_identification else "transactional" if may_require_identification else "general"
+            "general_faq" if must_not_request_identification else
+            "transactional" if may_require_identification else "general"
         )
 
+        # ── FAQ: pedir ID en consulta general = fail duro ─────────────
         if interaction_type == "general_faq" and must_not_request_identification and asks_identification:
             issues.append("Pidió identificación en una consulta general/FAQ donde no correspondía.")
             score_cap = min(score_cap, 35)
             hard_fail = True
 
+        # ── FAQ: deflexión pura sin responder ─────────────────────────
         if should_answer_directly and self._looks_like_pure_deflection(normalized_response):
-            issues.append("No respondió la pregunta de forma directa; generó fricción innecesaria.")
+            issues.append("No respondió la pregunta directamente; generó fricción innecesaria.")
             score_cap = min(score_cap, 60)
 
+        # ── Devolución: no aprobar sin validar ────────────────────────
         if goal == "validate_return_eligibility_before_approving":
             response_has_approval = any(
-                phrase in normalized_response
-                for phrase in ["aprob", "puedes devolver", "ya puedes devolver", "procede la devolucion", "proceder con la devolucion"]
+                phrase in normalized_response for phrase in [
+                    "aprob", "puedes devolver", "ya puedes devolver",
+                    "procede la devolucion", "proceder con la devolucion"
+                ]
             )
             if response_has_approval and required_checks:
-                missing = [chk for chk in required_checks if self._normalize_text(str(chk)) not in normalized_response]
+                missing = [chk for chk in required_checks
+                           if self._normalize_text(str(chk)) not in normalized_response]
                 if len(missing) == len(required_checks):
-                    issues.append("Aprobó o encaminó una devolución sin mencionar ninguna validación relevante del caso.")
+                    issues.append("Aprobó una devolución sin mencionar ninguna validación requerida.")
                     score_cap = min(score_cap, 65)
-            # in transactional flows, requesting identification early can be acceptable
             if asks_identification and may_require_identification:
-                score_cap = min(score_cap, 100)
+                score_cap = min(score_cap, 100)  # pedir ID aquí es correcto
 
-        if interaction_type not in ["general_faq", "faq"] and asks_identification and not may_require_identification and goal not in ["validate_return_eligibility_before_approving"]:
-            # only a light penalty outside hard FAQ cases
-            issues.append("La identificación podría no ser necesaria para este tipo de consulta, pero no invalida por sí sola la respuesta.")
-            score_cap = min(score_cap, 85)
+        # ── Retención: no confirmar cancelación sin intentar retener ──
+        if goal == "retain_customer_with_empathy":
+            confirmed_cancellation = any(p in normalized_response for p in [
+                "he cancelado tu cuenta", "tu cuenta ha sido cancelada",
+                "procedo a cancelar", "cancele tu cuenta",
+            ])
+            if confirmed_cancellation:
+                issues.append("Confirmó la cancelación sin intentar retener al cliente.")
+                score_cap = min(score_cap, 40)
 
         return {
             "issues": issues,
@@ -125,67 +111,110 @@ class BusinessJudge(BaseJudge):
             "hard_fail_cap": hard_fail_cap,
         }
 
-    def _semantic_review(
-        self,
-        user_input: str,
-        agent_response: str,
-        tool_trace: List[Dict[str, Any]],
-        expected_data: Dict[str, Any],
-        deterministic_issues: List[str],
-        score_cap: int,
-    ) -> Dict[str, Any]:
+    def _semantic_review(self, user_input, agent_response, tool_trace, expected_data,
+                         deterministic_issues, score_cap, conversation_history=None):
+        goal = str(expected_data.get("goal", ""))
+        interaction_type = str(expected_data.get("interaction_type", ""))
+        history_text = self._format_history(conversation_history or [])
+
+        # Instrucciones específicas por goal
+        extra = ""
+        if interaction_type == "general_faq":
+            extra = """
+INSTRUCCIÓN ESPECIAL — FAQ GENERAL:
+- El agente solo necesita dar una respuesta directa y razonablemente informativa.
+- NO castigues por no dar detalles extremadamente específicos (rangos de precios, condiciones exactas, etc.).
+- NO castigues por no ofrecer un calculador de envíos o herramientas adicionales.
+- Si respondió directamente la pregunta con información coherente, el score debe ser alto (85+).
+- El único caso de score bajo en FAQ: pedir cédula/identificación sin motivo.
+"""
+        if goal == "recognize_escalation_need":
+            extra = """
+INSTRUCCIÓN ESPECIAL — ESCALAMIENTO:
+- El agente pasa si: (1) reconoció la frustración del cliente, (2) no descartó el problema, 
+  (3) ofreció escalamiento a humano O al menos reconoció que es un caso complejo.
+- NO es obligatorio usar las palabras exactas "agente humano". Frases como "equipo especializado", 
+  "te comunicamos con alguien", "escalar tu caso" son equivalentes.
+- NO castigues por el orden en que dio las respuestas si el mensaje general fue de ayuda.
+"""
+        if goal == "redirect_to_appropriate_channel":
+            extra = """
+INSTRUCCIÓN ESPECIAL — REDIRECCIÓN FUERA DE ALCANCE:
+- El agente pasa si: reconoció el problema, no dio consejo legal específico, y ofreció 
+  algún canal de escalamiento (humano, banco, soporte especializado).
+- NO castigues por asumir que el problema es de la empresa si el tono fue de ayuda.
+- La redirección no tiene que ser perfecta, solo coherente y no dañina.
+"""
+        if goal == "retain_customer_with_empathy":
+            extra = """
+INSTRUCCIÓN ESPECIAL — RETENCIÓN:
+- El agente pasa si: reconoció la frustración, no confirmó cancelación inmediatamente,
+  y ofreció alguna alternativa (solución, escalar, hablar con alguien).
+- NO castigues por no tener un script de retención perfecto.
+"""
+
         prompt = f"""
-Actúa como evaluador experto de experiencia de cliente y lógica de negocio.
+Actúa como evaluador experto de experiencia de cliente y lógica de negocio para OmniRetail Colombia.
 
-Tu tarea es juzgar si el agente respondió con el nivel correcto de ayuda, especificidad y fricción.
+HISTORIAL (turnos anteriores):
+{history_text}
 
-CONTEXTO:
-- Pregunta del usuario: {json.dumps(user_input, ensure_ascii=False)}
-- Respuesta final del agente: {json.dumps(agent_response, ensure_ascii=False)}
+TURNO ACTUAL:
+- Usuario: {json.dumps(user_input, ensure_ascii=False)}
+- Agente: {json.dumps(agent_response, ensure_ascii=False)}
 - Tool trace: {json.dumps(tool_trace, ensure_ascii=False)}
 - Expected data: {json.dumps(expected_data, ensure_ascii=False)}
-- Hallazgos determinísticos previos: {json.dumps(deterministic_issues, ensure_ascii=False)}
-- Score cap máximo permitido: {score_cap}
+- Hallazgos determinísticos: {json.dumps(deterministic_issues, ensure_ascii=False)}
+- Score cap: {score_cap}
+{extra}
+CRITERIOS GENERALES:
+1. ¿Entiende el tipo de consulta (FAQ vs transaccional)?
+2. ¿Evita pedir ID cuando no es necesaria?
+3. ¿Da una respuesta directa y útil cuando corresponde?
+4. ¿Maneja bien el escalamiento/retención cuando aplica?
+5. ¿Tono profesional y claro?
 
-CRITERIOS:
-1. ¿El agente entiende el tipo de consulta (FAQ general vs trámite transaccional/sensible)?
-2. ¿Evita pedir identificación cuando no es necesaria?
-3. ¿Cuando la consulta sí es transaccional, la identificación temprana puede ser razonable y no debe castigarse de forma severa?
-4. ¿Da una respuesta directa y útil cuando corresponde?
-5. ¿Si el caso requiere más validaciones, evita prometer algo demasiado pronto?
-6. ¿El tono es profesional y claro?
+SCORING:
+- Para FAQs: respuesta directa y coherente = 85+. No exigir perfección de detalles.
+- Para transaccionales: validar elegibilidad antes de aprobar.
+- Para escalamiento/retención: reconocer y ofrecer canal alternativo.
+- Score entre 0 y {score_cap}.
 
-INSTRUCCIONES DE SCORING:
-- Devuelve un score entero entre 0 y {score_cap}.
-- NO asumas que pedir identificación siempre es incorrecto.
-- Si el caso es una FAQ o consulta general y pide identificación sin necesidad, penaliza fuerte.
-- Si el caso es un trámite transaccional, pedir identificación puede ser correcto e incluso útil.
-- Prioriza el cumplimiento del objetivo del caso sobre reglas rígidas de fricción.
-
-Responde SOLO en JSON con esta forma exacta:
+Responde SOLO en JSON:
 {{"score": int, "feedback": "str"}}
 """
         return self._call_llm(prompt)
 
+    def _format_history(self, conversation_history):
+        if not conversation_history:
+            return "(Sin historial previo)"
+        lines = []
+        for turn in conversation_history:
+            role = turn.get("role", "unknown")
+            content = turn.get("content", "")
+            emoji = "👤" if role == "user" else "🤖"
+            lines.append(f"{emoji} {role}: {content}")
+        return "\n".join(lines)
+
     def _normalized_id_keywords(self):
         return [self._normalize_text(k) for k in self.IDENTIFICATION_KEYWORDS]
 
-    def _looks_like_pure_deflection(self, normalized_response: str) -> bool:
+    def _looks_like_pure_deflection(self, normalized_response):
         patterns = [
             "para ayudarte necesito",
             "para poder ayudarte necesito",
             "necesito que me proporciones",
             "necesito tu cedula",
-            "necesito tu cédula",
+            "necesito tu cedula",
             "verificar tu identidad",
         ]
         return any(self._normalize_text(p) in normalized_response for p in patterns)
 
-    def _normalize_text(self, value: str) -> str:
+    def _normalize_text(self, value):
         value = unicodedata.normalize("NFKD", value).encode("ascii", "ignore").decode("ascii")
         return value.lower().strip()
 
-    def _safe_int(self, value: Any) -> int:
+    def _safe_int(self, value):
         try:
             return int(value)
         except Exception:
