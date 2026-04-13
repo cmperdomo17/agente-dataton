@@ -6,7 +6,17 @@ from typing import Any, Dict, List, Optional, Tuple
 
 
 class DataJudge(BaseJudge):
-    DATA_BACKEND_GROUP = ["athena", "dynamo"]
+    DATA_BACKEND_GROUP = [
+        # Known backends
+        "athena", "dynamo",
+        # Students may name their DynamoDB wrapper anything — tool naming is not prescribed
+        "consultar_tabla", "consultar_base", "consultar_db", "consultar_datos",
+        "consultar_pedido", "consultar_orden", "consultar_cliente", "consultar_producto",
+        "consultar_monto", "consultar_precio", "consultar_detalle",
+        "buscar_pedido", "buscar_orden", "buscar_cliente",
+        "obtener_pedido", "obtener_orden", "obtener_cliente",
+        "get_order", "get_customer", "get_product", "fetch_data", "query_db",
+    ]
 
     POLICY_KEYWORDS = [
     "politica", "política", "consultar_politica", "consultar_política",
@@ -88,9 +98,19 @@ class DataJudge(BaseJudge):
             hard_fail = True
 
         if requires_data_backend and not data_backend_used:
-            issues.append("No usó un backend de datos válido (Athena o Dynamo).")
-            score_cap = min(score_cap, 35)
-            hard_fail = True
+            if not tool_trace:
+                # True anti-hallucination: responded with no tool calls at all
+                issues.append("No usó ningún backend de datos y la traza está vacía.")
+                score_cap = min(score_cap, 35)
+                hard_fail = True
+            else:
+                # Student used tools but none match recognized keyword patterns.
+                # Tool naming is free-form in the challenge — soft penalty only.
+                issues.append(
+                    "Las herramientas usadas no coinciden con backends reconocidos "
+                    "(Athena/Dynamo). Revisa si los datos del tool trace son válidos."
+                )
+                score_cap = min(score_cap, 65)
 
         # Non-data required tools still apply literally.
         missing_literal_tools = self._missing_literal_required_tools(
@@ -199,6 +219,9 @@ CONTEXTO:
 - Score cap máximo permitido: {score_cap}
 
 INSTRUCCIONES IMPORTANTES SOBRE GROUNDING:
+- Los nombres de herramientas son libres — el estudiante puede llamar a su wrapper de DynamoDB
+  de cualquier forma (consultar_pedido, get_order, buscar_datos, etc.). Si el tool trace tiene
+  datos reales, ESO ES grounding válido independientemente del nombre de la herramienta.
 - En el tool trace, cada entrada tiene un campo "output" que contiene "result_snippet".
 - El campo "result_snippet" contiene los datos REALES devueltos por el backend (DynamoDB o políticas).
 - Si el "result_snippet" contiene datos que coinciden con lo que el agente respondió, ESO ES EVIDENCIA
