@@ -242,9 +242,6 @@ GOLDEN_SCENARIOS = [
     },
 
     {
-        # CAMBIO v3: agrega step 1 de identificación previa.
-        # La cédula 1947391335 corresponde al cliente dueño del pedido 5.
-        # expected_values = {base: 724942.0, total_iva: 862680.98}
         "id": "BASIC-DATA-01",
         "name": "Data básico: cálculo de costo total con IVA del pedido 5 (con ID previa)",
         "category": "data", "level": "basic",
@@ -284,7 +281,6 @@ GOLDEN_SCENARIOS = [
     # ══════════════════════════════════════════════════════════════════
 
     {
-        # CAMBIO v3: step 2 ahora pide verificar elegibilidad después de la cédula
         "id": "INT-BIZ-01",
         "name": "Negocio intermedio: devolución — identificación + verificar elegibilidad",
         "category": "business", "level": "intermediate",

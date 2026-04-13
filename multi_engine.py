@@ -1,18 +1,3 @@
-"""
-multi_engine.py — v3
-────────────────────
-FIX: multi_engine ya NO importa core.session_context en ningún momento.
-
-El problema anterior: los imports de session_context dentro de run_scenario()
-y _run_step() se re-ejecutaban en cada llamada. Después de _purge_team_modules,
-Python re-importaba session_context desde sys.path[0] (el ZIP del equipo),
-creando una instancia diferente a la que usaba el agente — traces vacíos.
-
-Solución: el engine recibe las funciones de session_context como inyección
-en __init__, resueltas UNA SOLA VEZ desde el path correcto del proyecto
-antes de que se cargue cualquier ZIP.
-"""
-
 import sys
 import time
 from typing import Any, Callable, Dict, List, Optional

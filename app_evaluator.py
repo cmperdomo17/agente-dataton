@@ -5,18 +5,66 @@ Modos de uso:
   Tab 1 "Mi Agente"    — corre el agente propio (core/agent.py) igual que antes
   Tab 2 "Submissions"  — carga ZIPs de equipos, los evalúa individualmente
   Tab 3 "Comparación"  — ranking comparativo entre equipos evaluados
+  Tab 4 "Resultados"   — carga resultados guardados; URL shareable via ?run=<run_id>
 
 Iniciar:
     streamlit run app_evaluator.py
 """
 
-import math
-import os
+import json
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import pandas as pd
 import streamlit as st
+
+RESULTS_DIR = Path("results")
+RESULTS_DIR.mkdir(exist_ok=True)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Persistence helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
+def save_run(sub_results: Dict[str, Any], run_id: str) -> Path:
+    """Save all team results for a run into results/<run_id>.json."""
+    payload = {
+        "run_id": run_id,
+        "saved_at": datetime.now().isoformat(),
+        "teams": sub_results,
+    }
+    path = RESULTS_DIR / f"{run_id}.json"
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    return path
+
+
+def list_saved_runs() -> List[Dict[str, Any]]:
+    """Return metadata for all saved runs, newest first."""
+    runs = []
+    for f in sorted(RESULTS_DIR.glob("*.json"), reverse=True):
+        try:
+            data = json.loads(f.read_text(encoding="utf-8"))
+            runs.append({
+                "run_id": data.get("run_id", f.stem),
+                "saved_at": data.get("saved_at", ""),
+                "teams": list(data.get("teams", {}).keys()),
+            })
+        except Exception:
+            pass
+    return runs
+
+
+def load_run(run_id: str) -> Optional[Dict[str, Any]]:
+    """Load a saved run by run_id. Returns the teams dict or None."""
+    path = RESULTS_DIR / f"{run_id}.json"
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data.get("teams", {})
+    except Exception:
+        return None
 
 st.set_page_config(page_title="OmniJudge Dashboard", layout="wide")
 
@@ -444,10 +492,11 @@ def build_comparison_df(payloads: Dict[str, Dict[str, Any]]) -> pd.DataFrame:
 # TABS
 # ─────────────────────────────────────────────────────────────────────────────
 
-tab_mine, tab_submissions, tab_compare = st.tabs([
+tab_mine, tab_submissions, tab_compare, tab_saved = st.tabs([
     "🤖 Mi Agente",
     "📦 Submissions",
     "🏆 Comparación de equipos",
+    "📂 Resultados guardados",
 ])
 
 
@@ -576,7 +625,7 @@ with tab_submissions:
                         from multi_engine import MultiEngine
 
                         # Resolver session_context del PROYECTO antes de cargar ZIPs
-                        import importlib, sys as _sys
+                        import importlib
                         _sc = importlib.import_module("core.session_context")
                         _session_fns = {
                             "reset_session":         _sc.reset_session,
@@ -626,6 +675,12 @@ with tab_submissions:
                         progress.progress(1.0, text="✅ Evaluación completa")
                         status_box.success("✅ Evaluación completa")
                         st.session_state["sub_results"] = sub_results
+
+                        # ── Persist to disk ───────────────────────────
+                        run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+                        saved_path = save_run(sub_results, run_id)
+                        st.session_state["last_run_id"] = run_id
+                        st.success(f"Resultados guardados → `{saved_path}` · Compartí: `?run={run_id}`")
                         st.rerun()
 
                     # ── Show results per team ─────────────────────────
@@ -705,3 +760,100 @@ with tab_compare:
 
         else:
             st.warning("No hay datos para comparar.")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TAB 4 — Resultados guardados (shareable via ?run=<run_id>)
+# ─────────────────────────────────────────────────────────────────────────────
+
+with tab_saved:
+    st.markdown(
+        "Cargá resultados de evaluaciones anteriores. "
+        "Compartí un resultado pegando `?run=<run_id>` al final de la URL."
+    )
+
+    saved_runs = list_saved_runs()
+
+    # ── Auto-load from URL query param ───────────────────────────────────────
+    qp = st.query_params
+    url_run_id = qp.get("run", None)
+
+    # ── Run selector ─────────────────────────────────────────────────────────
+    if not saved_runs:
+        st.info(f"No hay resultados guardados en `{RESULTS_DIR}/`. Evaluá equipos en la pestaña Submissions.")
+    else:
+        run_options = {r["run_id"]: r for r in saved_runs}
+        run_ids = list(run_options.keys())
+
+        default_idx = 0
+        if url_run_id and url_run_id in run_ids:
+            default_idx = run_ids.index(url_run_id)
+
+        selected_run_id = st.selectbox(
+            "Seleccioná un run guardado:",
+            options=run_ids,
+            index=default_idx,
+            format_func=lambda rid: (
+                f"{rid}  —  equipos: {', '.join(run_options[rid]['teams'])}"
+                f"  ({run_options[rid]['saved_at'][:19].replace('T', ' ')})"
+            ),
+        )
+
+        # Keep URL in sync so the current selection is always shareable
+        st.query_params["run"] = selected_run_id
+
+        run_meta = run_options[selected_run_id]
+        run_file = RESULTS_DIR / f"{selected_run_id}.json"
+        st.caption(
+            f"Guardado: {run_meta['saved_at'][:19].replace('T', ' ')}  ·  "
+            f"Equipos: {', '.join(run_meta['teams'])}  ·  "
+            f"Archivo: `{run_file.name}`"
+        )
+
+        col_share, col_dl = st.columns([3, 1])
+        col_share.info(f"Enlace shareable: agrega `?run={selected_run_id}` a la URL del navegador.")
+
+        # Download raw JSON
+        raw_json = run_file.read_text(encoding="utf-8")
+        col_dl.download_button(
+            label="⬇️ Descargar JSON",
+            data=raw_json,
+            file_name=run_file.name,
+            mime="application/json",
+        )
+
+        st.markdown("---")
+
+        # ── Load and render ───────────────────────────────────────────────────
+        saved_sub_results = load_run(selected_run_id)
+
+        if saved_sub_results is None:
+            st.error(f"No se pudo cargar el run `{selected_run_id}`.")
+        else:
+            # ── Comparison table ──────────────────────────────────────────────
+            st.subheader("🏆 Ranking")
+            comp_df = build_comparison_df(saved_sub_results)
+            if not comp_df.empty:
+                st.dataframe(comp_df, use_container_width=True, hide_index=True)
+
+                chart_df = comp_df[["equipo", "score_promedio"]].copy().set_index("equipo")
+                st.bar_chart(chart_df)
+
+                cat_cols = [c for c in comp_df.columns if c.startswith("score_")]
+                if cat_cols:
+                    cat_df = comp_df[["equipo"] + cat_cols].copy()
+                    cat_df.columns = ["equipo"] + [c.replace("score_", "") for c in cat_cols]
+                    st.subheader("🗂️ Scores por categoría")
+                    st.dataframe(cat_df, use_container_width=True, hide_index=True)
+
+            st.markdown("---")
+
+            # ── Per-team detail ───────────────────────────────────────────────
+            st.subheader("📊 Detalle por equipo")
+            team_tabs = st.tabs([f"📊 {t}" for t in saved_sub_results.keys()])
+            for team_tab, (team_name, payload) in zip(team_tabs, saved_sub_results.items()):
+                with team_tab:
+                    if payload.get("error"):
+                        st.error(f"Error durante evaluación: {payload['error']}")
+                    else:
+                        render_results(payload, team_label=team_name)
