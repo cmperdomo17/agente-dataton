@@ -10,7 +10,7 @@ import os
 
 
 # Leer config directamente desde env — mismos defaults que core/config.py
-_MODEL_ID   = os.getenv("MODEL_ID",   "us.anthropic.claude-3-7-sonnet-20250219-v1:0")
+_MODEL_ID   = os.getenv("MODEL_ID",   "us.anthropic.claude-sonnet-4-20250514-v1:0")
 _AWS_REGION = os.getenv("AWS_REGION", "us-east-2")
 _AWS_PROFILE = os.getenv("AWS_PROFILE", "")
 

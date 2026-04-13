@@ -8,6 +8,15 @@ from typing import Any, Dict, List, Optional, Tuple
 class DataJudge(BaseJudge):
     DATA_BACKEND_GROUP = ["athena", "dynamo"]
 
+    POLICY_KEYWORDS = [
+    "politica", "política", "consultar_politica", "consultar_política",
+    "policy", "policies", "buscar_politica", "buscar_política",
+    "retrieve", "buscar_documento", "consultar_documento",
+    "knowledge", "kb", "knowledge_base", "rag",
+    "devolucion", "devolución", "garantia", "garantía",
+    "reglamento", "condiciones", "terminos", "términos",
+    ]
+
     def evaluate(self, user_input, agent_response, tool_trace, expected_data=None):
         expected_data = expected_data or {}
 
@@ -108,7 +117,9 @@ class DataJudge(BaseJudge):
         # Missing must_consult_policy validation
         must_consult_policy = bool(expected_data.get("must_consult_policy", False))
         if must_consult_policy:
-            policy_consulted = any("consultar_politica" in t for t in tool_names)
+            policy_consulted = any(
+                any(kw in t for kw in POLICY_KEYWORDS) for t in tool_names
+            )
             if not policy_consulted:
                 issues.append("El caso requiere consultar las políticas pero no hay evidencia de uso de la herramienta.")
                 score_cap = min(score_cap, 40)

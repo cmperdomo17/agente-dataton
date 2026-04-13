@@ -9,7 +9,8 @@ class BusinessJudge(BaseJudge):
     IDENTIFICATION_KEYWORDS = [
         "cedula", "cédula", "dni", "documento", "identificacion", "identificación",
         "numero de documento", "número de documento", "verificar tu identidad",
-        "numero de cedula", "número de cédula", "documento de identidad",
+        "numero de cedula", "número de cédula", "documento de identidad", "celular", "numero de celular", "número de celular",
+        "telefono", "teléfono",
     ]
 
     def evaluate(self, user_input, agent_response, tool_trace, expected_data=None, conversation_history=None):
