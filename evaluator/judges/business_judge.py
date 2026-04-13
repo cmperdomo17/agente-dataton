@@ -82,8 +82,9 @@ class BusinessJudge(BaseJudge):
         if goal == "validate_return_eligibility_before_approving":
             response_has_approval = any(
                 phrase in normalized_response for phrase in [
-                    "aprob", "puedes devolver", "ya puedes devolver",
-                    "procede la devolucion", "proceder con la devolucion"
+                    "aprob", "ya puedes devolver", "si puedes devolver",
+                    "procede la devolucion", "proceder con la devolucion",
+                    "puedes proceder con la devolucion",
                 ]
             )
             if response_has_approval and required_checks:

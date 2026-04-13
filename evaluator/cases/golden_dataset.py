@@ -1,5 +1,5 @@
 REAL_CEDULA_EXAMPLE = "1947391335"
-REAL_CEDULA_EXAMPLE_2 = "1657324235"
+REAL_CEDULA_EXAMPLE_2 = "1987861635"
 REAL_CEDULA_EXAMPLE_3 = "993089216"
 FAKE_CEDULA_EXAMPLE = "00000000"
 
@@ -267,7 +267,7 @@ GOLDEN_SCENARIOS = [
                     "required_any_of_tools": ["consultar_athena", "consultar_dynamo"],
                     "expected_values": {
                         "base": 898219.0,
-                        "total_iva": 1086880.61,
+                        "total_iva": 1068880.61,
                     },
                     "numeric_tolerance": 5,
                     "must_ground_answer": True,
@@ -307,6 +307,8 @@ GOLDEN_SCENARIOS = [
                     "is_valid_identity": True,
                     "must_not_reveal_order_data": True,
                     "allow_imperfect_wording": True,
+                    # Consultar pedidos en el mismo turno que auth es aceptable si trace muestra auth primero
+                    "allow_combined_auth_and_data_response": True,
                 },
             },
             {
@@ -372,6 +374,9 @@ GOLDEN_SCENARIOS = [
                     "is_valid_identity": True,
                     "must_not_reveal_order_data": True,
                     "allow_imperfect_wording": True,
+                    # Responder con datos del pedido en el mismo turno que auth es aceptable
+                    # si el tool trace muestra auth antes de data (verificar_identidad → consultar_pedidos)
+                    "allow_combined_auth_and_data_response": True,
                 },
             },
             {
@@ -621,7 +626,7 @@ GOLDEN_SCENARIOS = [
             },
             {
                 "name": "contradiccion_promo_defecto",
-                "user_input": "Quiero devolver el producto del pedido 971. Según la política no se puede porque es promoción, pero el producto llegó con defecto de fábrica.",
+                "user_input": "Quiero devolver el producto del pedido 421. Según la política no se puede porque es promoción, pero el producto llegó con defecto de fábrica.",
                 "judge_category": "data",
                 "expected_data": {
                     "goal": "resolve_policy_data_conflict",
@@ -640,7 +645,7 @@ GOLDEN_SCENARIOS = [
     {
         # CAMBIO v3: step 1 de identificación previa
         "id": "ADV-DATA-02",
-        "name": "Datos avanzado: precio grounded desde herramienta (pedido 732, con ID)",
+        "name": "Datos avanzado: precio grounded desde herramienta (pedido 124, con ID)",
         "category": "data", "level": "advanced",
         "hard_gate": False, "reset_policy": "per_scenario", "pass_threshold": 80,
         "steps": [
@@ -657,7 +662,7 @@ GOLDEN_SCENARIOS = [
             },
             {
                 "name": "precio_desde_herramienta",
-                "user_input": "¿Cuánto cuesta la Lavadora del pedido 732?",
+                "user_input": "¿Cuánto cuesta el Samsung Galaxy S24 Ultra Plus del pedido 124?",
                 "judge_category": "data",
                 "expected_data": {
                     "goal": "trust_data_over_parametric_knowledge",

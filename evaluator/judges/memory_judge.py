@@ -113,43 +113,10 @@ class MemoryJudge(BaseJudge):
     ) -> Dict[str, Any]:
         history_text = self._format_history(conversation_history)
 
-        allow_proactive_id = bool(expected_data.get("allow_proactive_identification", False))
-        id_penalty_mode = expected_data.get("identification_penalty_mode", "hard")
-        must_not_block = bool(expected_data.get("must_not_block_primary_goal", False))
-
-        if allow_proactive_id and id_penalty_mode == "soft":
-            id_criterion = (
-                "3. El agente PUEDE pedir identificación de forma proactiva en este escenario "
-                "(allow_proactive_identification=True, identification_penalty_mode=soft). "
-                "Solo penaliza por la solicitud de identificación si BLOQUEÓ la respuesta "
-                "principal — es decir, el agente no respondió lo que se le preguntó y en su "
-                "lugar únicamente pidió cédula/DNI. Si el agente respondió la pregunta Y "
-                "adicionalmente pidió identificación, eso es comportamiento correcto."
-            )
-        else:
-            id_criterion = (
-                "3. ¿Evita pedir identificación formal (cédula/DNI) cuando solo se trata de "
-                "recordar datos conversacionales? Si pide identificación sin necesidad, "
-                "penaliza significativamente."
-            )
-
-        blocking_note = ""
-        if must_not_block:
-            blocking_note = (
-                "\nNOTA must_not_block_primary_goal: el agente debe responder la pregunta "
-                "principal (p.ej. decir el nombre recordado). Si lo hace aunque también pida "
-                "identificación, el objetivo principal está cumplido."
-            )
-
         prompt = f"""
 Actúa como evaluador experto de memoria conversacional para agentes de atención al cliente.
 
 Tu tarea es juzgar si el agente recuerda correctamente la información que el usuario compartió durante la conversación.
-
-CONFIGURACIÓN DEL ESCENARIO:
-- allow_proactive_identification: {allow_proactive_id}
-- identification_penalty_mode: {id_penalty_mode}
-- must_not_block_primary_goal: {must_not_block}
 
 HISTORIAL DE LA CONVERSACIÓN (turnos anteriores):
 {history_text}
@@ -164,10 +131,9 @@ TURNO ACTUAL:
 CRITERIOS:
 1. ¿El agente recuerda los datos que el usuario mencionó en turnos anteriores (nombre, ciudad, preferencias)?
 2. ¿Responde con los datos correctos sin inventar información?
-{id_criterion}
+3. ¿Evita pedir identificación formal (cédula/DNI) cuando solo se trata de recordar datos conversacionales?
 4. ¿Es natural y fluido al recordar, sin sonar mecánico?
 5. Si el usuario corrigió un dato, ¿el agente usa el dato actualizado?
-{blocking_note}
 
 IMPORTANTE:
 - Los datos que el usuario compartió en turnos anteriores NO son "inventados" por el agente al recordarlos.

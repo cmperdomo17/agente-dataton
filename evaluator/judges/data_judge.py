@@ -138,7 +138,7 @@ class DataJudge(BaseJudge):
         must_consult_policy = bool(expected_data.get("must_consult_policy", False))
         if must_consult_policy:
             policy_consulted = any(
-                any(kw in t for kw in POLICY_KEYWORDS) for t in tool_names
+                any(kw in t for kw in self.POLICY_KEYWORDS) for t in tool_names
             )
             if not policy_consulted:
                 issues.append("El caso requiere consultar las políticas pero no hay evidencia de uso de la herramienta.")
