@@ -83,7 +83,8 @@ class MemoryJudge(BaseJudge):
                 issues.append(f"No usó ni reconoció el nombre '{name}' en su respuesta.")
                 score_cap = min(score_cap, 70)
 
-        if goal == "store_profile_fields" and facts:
+        acknowledgment_optional = bool(expected_data.get("acknowledgment_optional", False))
+        if goal == "store_profile_fields" and facts and not acknowledgment_optional:
             missing = [f for f in facts if self._normalize_text(str(f)) not in response_n]
             if missing:
                 issues.append(f"No reconoció estos datos del perfil: {', '.join(missing)}.")
@@ -113,6 +114,19 @@ class MemoryJudge(BaseJudge):
     ) -> Dict[str, Any]:
         history_text = self._format_history(conversation_history)
 
+        allow_proactive_id = bool(expected_data.get("allow_proactive_identification", False))
+        id_penalty_mode = expected_data.get("identification_penalty_mode", "hard")
+        acknowledgment_optional = bool(expected_data.get("acknowledgment_optional", False))
+
+        if allow_proactive_id and id_penalty_mode == "soft":
+            criterion_3 = "3. El agente PUEDE pedir identificación de forma proactiva en este escenario. Solo penaliza si la solicitud de identificación BLOQUEÓ la respuesta principal (es decir, el agente no respondió lo que se le preguntó)."
+        else:
+            criterion_3 = "3. ¿Evita pedir identificación formal (cédula/DNI) cuando solo se trata de recordar datos conversacionales?"
+
+        acknowledgment_note = ""
+        if acknowledgment_optional:
+            acknowledgment_note = "\n- IMPORTANTE: En este paso el agente solo necesita almacenar los datos recibidos — NO tiene que confirmarlos ni repetirlos en su respuesta. Si el agente saludó al usuario y respondió de forma natural sin repetir los datos, eso es CORRECTO. No penalices por no mencionar explícitamente los datos almacenados."
+
         prompt = f"""
 Actúa como evaluador experto de memoria conversacional para agentes de atención al cliente.
 
@@ -128,10 +142,15 @@ TURNO ACTUAL:
 - Hallazgos determinísticos previos: {json.dumps(deterministic_issues, ensure_ascii=False)}
 - Score cap máximo permitido: {score_cap}
 
+CONFIGURACIÓN DEL ESCENARIO:
+- allow_proactive_identification: {allow_proactive_id}
+- identification_penalty_mode: {id_penalty_mode}
+- acknowledgment_optional: {acknowledgment_optional}{acknowledgment_note}
+
 CRITERIOS:
 1. ¿El agente recuerda los datos que el usuario mencionó en turnos anteriores (nombre, ciudad, preferencias)?
 2. ¿Responde con los datos correctos sin inventar información?
-3. ¿Evita pedir identificación formal (cédula/DNI) cuando solo se trata de recordar datos conversacionales?
+{criterion_3}
 4. ¿Es natural y fluido al recordar, sin sonar mecánico?
 5. Si el usuario corrigió un dato, ¿el agente usa el dato actualizado?
 

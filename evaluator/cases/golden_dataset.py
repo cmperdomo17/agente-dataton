@@ -580,6 +580,7 @@ GOLDEN_SCENARIOS = [
                     "should_offer_human_agent": False,
                     "must_not_give_legal_advice": True,
                     "should_acknowledge_issue": True,
+                    "may_require_identification": True,  # billing dispute can legitimately need ID
                 },
             }
         ],

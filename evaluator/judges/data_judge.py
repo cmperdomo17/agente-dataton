@@ -16,6 +16,8 @@ class DataJudge(BaseJudge):
         "buscar_pedido", "buscar_orden", "buscar_cliente",
         "obtener_pedido", "obtener_orden", "obtener_cliente",
         "get_order", "get_customer", "get_product", "fetch_data", "query_db",
+        "items_pedido",  # matches consultar_items_pedido
+        "pedido",        # broad fallback: any tool operating on a pedido
     ]
 
     POLICY_KEYWORDS = [
@@ -104,13 +106,14 @@ class DataJudge(BaseJudge):
                 score_cap = min(score_cap, 35)
                 hard_fail = True
             else:
-                # Student used tools but none match recognized keyword patterns.
-                # Tool naming is free-form in the challenge — soft penalty only.
+                # Student used tools but none matched recognized keyword patterns.
+                # Tool naming is free-form — soft penalty only, no hard_fail.
                 issues.append(
                     "Las herramientas usadas no coinciden con backends reconocidos "
                     "(Athena/Dynamo). Revisa si los datos del tool trace son válidos."
                 )
                 score_cap = min(score_cap, 65)
+                # hard_fail intentionally NOT set — non-empty trace is not hallucination
 
         # Non-data required tools still apply literally.
         missing_literal_tools = self._missing_literal_required_tools(
