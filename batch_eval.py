@@ -62,6 +62,7 @@ def run_all(submissions_dir: str, output_dir: str, category_filter=None, level_f
         engine = MultiEngine(
             create_agent_fn=sub.create_agent,
             team_name=sub.team_name,
+            session_fns=sub._session_fns,
         )
 
         t0 = time.perf_counter()

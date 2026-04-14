@@ -48,35 +48,37 @@ class MultiEngine:
 
     def _resolve_project_session_context(self):
         """
-        Obtener el módulo session_context del PROYECTO (no del ZIP).
-        Busca en sys.modules el módulo cuyo __file__ contiene el path
-        del proyecto, no de un directorio temporal de ZIP.
+        Return the canonical session_context module — the one all team agents write
+        traces to.  submission_loader._get_canonical_session_context() pre-registers
+        it as sys.modules['core.session_context'] before any team module is exec'd,
+        so by the time MultiEngine is initialised both parties share the same object.
         """
-        import importlib
+        import importlib, importlib.util, os
 
-        # Primero intentar desde sys.modules si ya está cacheado del proyecto
+        # Fast path: submission_loader already registered our canonical module.
         cached = sys.modules.get("core.session_context")
         if cached and hasattr(cached, "reset_session"):
             mod_file = getattr(cached, "__file__", "") or ""
-            # Si no viene de un dir temporal de ZIP, es el del proyecto
+            # Accept if the file lives in the project (not in a tmp/omni_eval dir)
             if "omni_eval" not in mod_file and "tmp" not in mod_file.lower():
                 return cached
 
-        # Si no, importar explícitamente — en este punto sys.path[0] puede ser
-        # el ZIP, así que buscamos en los paths siguientes
+        # Fallback (e.g. when MultiEngine is used without submission_loader):
+        # find our session_context by walking sys.path and register it canonically
+        # so future calls hit the fast path.
         for path_entry in sys.path[1:]:
-            import os
             candidate = os.path.join(path_entry, "core", "session_context.py")
             if os.path.exists(candidate) and "omni_eval" not in candidate:
                 spec = importlib.util.spec_from_file_location(
-                    "core.session_context_project", candidate
+                    "core.session_context", candidate
                 )
                 mod = importlib.util.module_from_spec(spec)
+                mod.__package__ = "core"
+                sys.modules["core.session_context"] = mod  # register before exec
                 spec.loader.exec_module(mod)
                 return mod
 
-        # Último recurso: importar normalmente
-        import importlib
+        # Last resort: normal import
         return importlib.import_module("core.session_context")
 
     # ── Public API ────────────────────────────────────────────────────────────

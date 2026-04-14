@@ -10,6 +10,48 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, List, Optional
 
+_TRACE_FN_NAMES = ("reset_session", "get_tool_trace", "get_tool_trace_length", "get_tool_trace_since")
+
+
+def _capture_team_session_fns():
+    """
+    After a team module is exec'd, sys.modules['core.session_context'] is the
+    team's own session_context module (loaded from their core/ directory).
+
+    Capture its trace functions so MultiEngine can read from the SAME instance
+    that the team agent writes to.  Returns None if the module lacks the
+    standard trace API (engine falls back to its own resolution).
+
+    Supports two patterns:
+      Pattern 1 — module-level functions (most teams).
+      Pattern 2 — class-based singleton via SessionContext (e.g. JULIAN).
+    """
+    sc = sys.modules.get("core.session_context")
+    if sc is None:
+        return None
+
+    # Pattern 1: module-level functions
+    if all(hasattr(sc, fn) for fn in _TRACE_FN_NAMES):
+        return {fn: getattr(sc, fn) for fn in _TRACE_FN_NAMES}
+
+    # Pattern 2: class-based singleton (e.g. JULIAN's SessionContext)
+    sc_class = getattr(sc, "SessionContext", None)
+    if sc_class is not None and callable(sc_class):
+        try:
+            instance = sc_class()  # __new__ returns existing singleton
+            if all(hasattr(instance, fn) for fn in _TRACE_FN_NAMES):
+                import inspect
+                fns = {fn: getattr(instance, fn) for fn in _TRACE_FN_NAMES}
+                # Wrap reset_session with save=False to skip DynamoDB writes during eval
+                original_reset = fns["reset_session"]
+                if "save" in inspect.signature(original_reset).parameters:
+                    fns["reset_session"] = lambda: original_reset(save=False)
+                return fns
+        except Exception:
+            pass
+
+    return None
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Data classes
@@ -33,6 +75,8 @@ class SubmissionInfo:
     contract_passed: bool = False
 
     _create_agent_fn: Optional[Callable] = field(default=None, repr=False)
+    _session_fns: Optional[dict] = field(default=None, repr=False)
+    _core_mod: Any = field(default=None, repr=False)  # team's core module snapshot
     load_error: Optional[str] = None
 
     @property
@@ -42,6 +86,12 @@ class SubmissionInfo:
     def create_agent(self, streaming: bool = False) -> Any:
         if not self.ready:
             raise RuntimeError(f"Submission '{self.team_name}' is not ready: {self.load_error}")
+        # Restore this team's core module so lazy relative imports inside
+        # create_agent() (e.g. `from .strands_tools import ...`) resolve
+        # against the correct core/ directory and not a later team's.
+        if self._core_mod is not None:
+            sys.modules["core"] = self._core_mod
+        _inject_path_permanently(Path(self.root_dir))
         return self._create_agent_fn(streaming=streaming)
 
     def summary(self) -> str:
@@ -84,10 +134,13 @@ class SubmissionLoader:
             root_dir="",
         )
 
-        # Step 1: extract
+        # Step 1: extract (normalize Windows backslashes in member names)
         try:
             with zipfile.ZipFile(zip_path, "r") as zf:
-                zf.extractall(extract_dir)
+                for member in zf.infolist():
+                    # Normalize Windows-style paths (core\agent.py → core/agent.py)
+                    member.filename = member.filename.replace("\\", "/")
+                    zf.extract(member, extract_dir)
         except Exception as e:
             sub.load_error = f"No se pudo extraer el ZIP: {e}"
             return sub
@@ -121,6 +174,13 @@ class SubmissionLoader:
         # Step 7: dynamic import
         try:
             sub._create_agent_fn = _dynamic_import_create_agent(root_dir, team_name)
+            # Snapshot the team's core module so create_agent() can restore it
+            # later — avoids lazy relative imports resolving against a different
+            # team's core/ when multiple teams are loaded before evaluation runs.
+            sub._core_mod = sys.modules.get("core")
+            # Capture the team's session_context trace functions so MultiEngine
+            # reads from the same module instance the agent writes to.
+            sub._session_fns = _capture_team_session_fns()
         except Exception as e:
             sub.load_error = f"Error importando create_agent: {e}\n{traceback.format_exc()}"
 
@@ -214,6 +274,14 @@ def _ensure_session_context(root_dir: Path):
     if our_session_context.exists():
         shutil.copy(our_session_context, target)
 
+    # Ensure core/__init__.py exists so Python treats it as a regular package.
+    # Without it, Python's import machinery may prefer our own core/ (which has
+    # __init__.py) over the team's core/ (namespace package), causing ImportError
+    # for modules that exist in the team's core/ but not in ours.
+    init_path = root_dir / "core" / "__init__.py"
+    if not init_path.exists():
+        init_path.touch()
+
 
 def _purge_team_modules(incoming_root: Path):
     """
@@ -271,14 +339,28 @@ def _dynamic_import_create_agent(root_dir: Path, team_name: str) -> Callable:
     Importa create_agent dinámicamente desde core/agent.py del equipo.
     El root del equipo ya debe estar en sys.path[0].
     """
+    import types
+
     agent_path = root_dir / "core" / "agent.py"
     module_name = f"team_{team_name}_core_agent"
+
+    # Explicitly register the team's core/ as the canonical 'core' package.
+    # This must happen after _purge_team_modules has cleared stale core.* entries.
+    # Without this, Python's import machinery may follow sys.path and pick up our
+    # own core/__init__.py (from the cwd) instead of the team's core/ directory,
+    # breaking both absolute (from core.X import ...) and relative (from .X import ...).
+    core_mod = types.ModuleType("core")
+    core_mod.__path__ = [str(root_dir / "core")]
+    core_mod.__package__ = "core"
+    core_mod.__file__ = str(root_dir / "core" / "__init__.py")
+    sys.modules["core"] = core_mod
 
     spec = importlib.util.spec_from_file_location(module_name, agent_path)
     if spec is None or spec.loader is None:
         raise ImportError(f"No se pudo crear spec para {agent_path}")
 
     module = importlib.util.module_from_spec(spec)
+    module.__package__ = "core"
     sys.modules[module_name] = module
     spec.loader.exec_module(module)
 

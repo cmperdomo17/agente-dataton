@@ -18,6 +18,9 @@ class DataJudge(BaseJudge):
         "get_order", "get_customer", "get_product", "fetch_data", "query_db",
         "items_pedido",  # matches consultar_items_pedido
         "pedido",        # broad fallback: any tool operating on a pedido
+        # English naming variants used by some teams
+        "list_order", "list_orders", "list_customer",  # jorge: list_customer_orders, list_order_items
+        "execute_sql", "sql_query", "run_query",        # JULIAN: execute_sql_query (Athena)
     ]
 
     POLICY_KEYWORDS = [

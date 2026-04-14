@@ -1,17 +1,17 @@
 """
-app_evaluator.py — OmniJudge Dashboard (v2)
-────────────────────────────────────────────
-Modos de uso:
-  Tab 1 "Mi Agente"    — corre el agente propio (core/agent.py) igual que antes
-  Tab 2 "Submissions"  — carga ZIPs de equipos, los evalúa individualmente
-  Tab 3 "Comparación"  — ranking comparativo entre equipos evaluados
-  Tab 4 "Resultados"   — carga resultados guardados; URL shareable via ?run=<run_id>
+app_evaluator.py — OmniJudge Dashboard
+
+Tabs:
+  ▶️  Evaluar   — carga ZIPs, valida contratos, evalúa uno o varios equipos
+  📂  Resultados — explora resultados guardados (app + batch_eval.py)
+  🏆  Comparar  — ranking y comparación por escenario entre equipos/runs
 
 Iniciar:
     streamlit run app_evaluator.py
 """
 
 import json
+import traceback as _tb
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -22,838 +22,767 @@ import streamlit as st
 RESULTS_DIR = Path("results")
 RESULTS_DIR.mkdir(exist_ok=True)
 
-
 # ─────────────────────────────────────────────────────────────────────────────
-# Persistence helpers
+# Persistence helpers — handle both app format and batch_eval.py format
 # ─────────────────────────────────────────────────────────────────────────────
 
-def save_run(sub_results: Dict[str, Any], run_id: str) -> Path:
-    """Save all team results for a run into results/<run_id>.json."""
+def save_run(teams: Dict[str, Any]) -> tuple:
+    """Save multi-team results. Returns (path, run_id)."""
+    run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
     payload = {
         "run_id": run_id,
         "saved_at": datetime.now().isoformat(),
-        "teams": sub_results,
+        "teams": teams,
     }
     path = RESULTS_DIR / f"{run_id}.json"
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    return path
+    return path, run_id
+
+
+def _file_to_run(path: Path) -> Optional[Dict[str, Any]]:
+    """
+    Parse any result JSON into {run_id, saved_at, teams}.
+    Handles:
+      - App format:       {"run_id":..., "saved_at":..., "teams":{...}}
+      - batch_eval.py:    {"team_name":..., "summary":..., "run_id":..., ...}
+    """
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+    if "teams" in data:
+        # App multi-team format
+        return {
+            "run_id": data.get("run_id", path.stem),
+            "saved_at": data.get("saved_at", ""),
+            "teams": data["teams"],
+            "_path": path,
+        }
+
+    if "team_name" in data and "summary" in data:
+        # batch_eval.py single-team format
+        run_id = data.get("run_id", path.stem)
+        return {
+            "run_id": run_id,
+            "saved_at": run_id,
+            "teams": {data["team_name"]: data},
+            "_path": path,
+        }
+
+    return None
+
+
+def _group_runs() -> Dict[str, Dict[str, Any]]:
+    """Return all runs keyed by run_id. Files sharing a run_id are merged."""
+    by_run: Dict[str, Dict] = {}
+    for f in sorted(RESULTS_DIR.glob("*.json"), reverse=True):
+        parsed = _file_to_run(f)
+        if not parsed:
+            continue
+        rid = parsed["run_id"]
+        if rid not in by_run:
+            by_run[rid] = {
+                "run_id": rid,
+                "saved_at": parsed["saved_at"],
+                "teams": {},
+                "_paths": [],
+            }
+        by_run[rid]["teams"].update(parsed["teams"])
+        by_run[rid]["_paths"].append(f)
+    return by_run
 
 
 def list_saved_runs() -> List[Dict[str, Any]]:
-    """Return metadata for all saved runs, newest first."""
-    runs = []
-    for f in sorted(RESULTS_DIR.glob("*.json"), reverse=True):
-        try:
-            data = json.loads(f.read_text(encoding="utf-8"))
-            runs.append({
-                "run_id": data.get("run_id", f.stem),
-                "saved_at": data.get("saved_at", ""),
-                "teams": list(data.get("teams", {}).keys()),
-            })
-        except Exception:
-            pass
-    return runs
+    runs = _group_runs()
+    return [
+        {
+            "run_id": v["run_id"],
+            "saved_at": v["saved_at"],
+            "teams": list(v["teams"].keys()),
+            "_paths": v["_paths"],
+        }
+        for v in sorted(runs.values(), key=lambda x: x["run_id"], reverse=True)
+    ]
 
 
 def load_run(run_id: str) -> Optional[Dict[str, Any]]:
-    """Load a saved run by run_id. Returns the teams dict or None."""
-    path = RESULTS_DIR / f"{run_id}.json"
-    if not path.exists():
-        return None
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-        return data.get("teams", {})
-    except Exception:
-        return None
+    runs = _group_runs()
+    run = runs.get(run_id)
+    return run["teams"] if run else None
 
-st.set_page_config(page_title="OmniJudge Dashboard", layout="wide")
 
-st.title("🛡️ OmniRetail · Auditoría de Agentes Inteligentes")
-st.markdown(
-    "Evaluación automática: escenarios multi-turn, hard gates, memoria, "
-    "grounding, telemetría y comparación entre equipos."
-)
-st.markdown("---")
+def delete_run(run_id: str):
+    runs = _group_runs()
+    run = runs.get(run_id)
+    if run:
+        for p in run.get("_paths", []):
+            p.unlink(missing_ok=True)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Helpers (igual que v1)
+# Small helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
-def safe_bool_icon(value: bool) -> str:
-    return "✅" if bool(value) else "❌"
+def _icon(v: bool) -> str:
+    return "✅" if bool(v) else "❌"
 
 
-def format_ms(value) -> str:
-    if value is None:
-        return "N/D"
+def _ms(v) -> str:
     try:
-        return f"{float(value):.0f} ms"
+        return f"{float(v):.0f} ms"
     except Exception:
-        return "N/D"
+        return "—"
 
 
-def parse_failure_reason(step: Dict[str, Any]) -> str:
-    feedback = str(step.get("feedback", "") or "").lower()
-    expected = step.get("expected_data", {}) or {}
-    judge = str(step.get("judge_category", "") or "")
-
-    if step.get("status") == "error":
-        return "error técnico"
-    if judge == "memory":
-        if "identific" in feedback:
-            return "pidió identificación innecesaria"
-        if "no recordó" in feedback or "memoria" in feedback:
-            return "fallo de memoria"
-        return "memoria"
-    if expected.get("must_not_request_identification") and (
-        "identific" in feedback or "fricción" in feedback or "friccion" in feedback
-    ):
-        return "pidió identificación innecesaria"
-    if expected.get("must_request_identification") and "identific" in feedback:
-        return "no manejó identificación correctamente"
-    if expected.get("must_use_retrieval") and (
-        "retrieval" in feedback or "document" in feedback or "ground" in feedback
-    ):
-        return "fallo de retrieval/grounding"
-    if expected.get("must_ground_answer") and (
-        "herramienta" in feedback or "tool" in feedback or "ground" in feedback
-    ):
-        return "no consultó datos reales"
-    if expected.get("must_not_reveal_order_data") and "revela" in feedback:
-        return "reveló datos sin autorización"
-    return "otro"
+def _pct(a, b) -> str:
+    return f"{round(a / b * 100, 1)}%" if b else "—"
 
 
-def summarize_expectation(expected: Dict[str, Any]) -> str:
-    goal = expected.get("goal", "")
-    must_use = expected.get("must_use_retrieval") or expected.get("must_ground_answer")
-    must_id = expected.get("must_request_identification")
-    must_not_id = expected.get("must_not_request_identification")
-    parts = []
-    if goal:
-        parts.append(goal)
-    if must_use:
-        parts.append("requiere grounding")
-    if must_id:
-        parts.append("debe pedir ID")
-    if must_not_id:
-        parts.append("sin pedir ID")
-    return " | ".join(parts) if parts else "—"
+# ─────────────────────────────────────────────────────────────────────────────
+# DataFrames
+# ─────────────────────────────────────────────────────────────────────────────
 
-
-def build_scenario_df(scenario_results: List[Dict[str, Any]]) -> pd.DataFrame:
+def build_scenario_df(scenario_results: List[Dict]) -> pd.DataFrame:
     rows = []
     for s in scenario_results:
-        step_results = s.get("step_results") or []
-        failed_steps = [st for st in step_results if not st.get("passed", False)]
-        primary_failure = parse_failure_reason(failed_steps[0]) if failed_steps else ""
         rows.append({
-            "id": s.get("id"),
-            "name": s.get("name"),
-            "category": s.get("category"),
-            "level": s.get("level", "—"),
-            "hard_gate": s.get("hard_gate", False),
-            "reset_policy": s.get("reset_policy"),
-            "steps_run": s.get("steps_run", 0),
-            "scenario_score": s.get("scenario_score", 0),
-            "passed": s.get("passed", False),
-            "status": s.get("status", "unknown"),
-            "primary_failure_reason": primary_failure,
+            "id": s.get("id", ""),
+            "nombre": s.get("name", ""),
+            "categoría": s.get("category", ""),
+            "nivel": s.get("level", "—"),
+            "hard gate": _icon(s.get("hard_gate", False)),
+            "score": s.get("scenario_score", 0),
+            "aprobado": _icon(s.get("passed", False)),
+            "estado": s.get("status", "—"),
+            "steps": s.get("steps_run", 0),
         })
     return pd.DataFrame(rows)
 
 
-def build_step_df(scenario_results: List[Dict[str, Any]]) -> pd.DataFrame:
+def build_comparison_df(payloads: Dict[str, Dict]) -> pd.DataFrame:
     rows = []
-    for s in scenario_results:
-        for step in (s.get("step_results") or []):
-            metrics = step.get("metrics") or {}
-            expected_data = step.get("expected_data") or {}
-            rows.append({
-                "scenario_id": s.get("id"),
-                "step_index": step.get("step_index"),
-                "step_name": step.get("step_name"),
-                "judge_category": step.get("judge_category"),
-                "expectation": summarize_expectation(expected_data),
-                "score": step.get("score", 0),
-                "passed": step.get("passed", False),
-                "status": step.get("status", "unknown"),
-                "failure_reason": "" if step.get("passed", False) else parse_failure_reason(step),
-                "trt_ms": metrics.get("trt_ms"),
-                "e2e_ms": metrics.get("e2e_ms"),
-                "ttft_ms": metrics.get("ttft_ms"),
-            })
-    return pd.DataFrame(rows)
-
-
-def normalize_old_payload(results: List[Dict[str, Any]]) -> Dict[str, Any]:
-    scenario_results = []
-    for res in results:
-        scenario_results.append({
-            "id": res.get("id"),
-            "name": res.get("name"),
-            "category": res.get("category"),
-            "level": res.get("level", "legacy"),
-            "hard_gate": False,
-            "reset_policy": "per_step",
-            "pass_threshold": 80,
-            "passed": (res.get("score", 0) >= 80),
-            "status": res.get("status", "ok"),
-            "scenario_score": res.get("score", 0),
-            "steps_run": 1,
-            "scenario_trace": res.get("trace"),
-            "error": res.get("error"),
-            "step_results": [{
-                "step_index": 0,
-                "step_name": "single_step",
-                "judge_category": res.get("category"),
-                "input": res.get("input", ""),
-                "response": res.get("response", ""),
-                "score": res.get("score", 0),
-                "feedback": res.get("feedback", ""),
-                "passed": (res.get("score", 0) >= 80),
-                "status": res.get("status", "ok"),
-                "trace": res.get("trace", []),
-                "expected_data": res.get("expected_data", {}),
-                "metrics": {},
-            }],
-        })
-    total = len(scenario_results)
-    passed = sum(1 for s in scenario_results if s.get("passed"))
-    return {
-        "summary": {
-            "total_scenarios": total,
-            "passed_scenarios": passed,
-            "failed_scenarios": total - passed,
-            "total_steps": total,
-            "hard_gate_failed_ids": [],
-            "disqualified": False,
-        },
-        "scenario_results": scenario_results,
-    }
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Sidebar (filtros compartidos)
-# ─────────────────────────────────────────────────────────────────────────────
-
-st.sidebar.header("⚙️ Filtros globales")
-show_only_failed       = st.sidebar.checkbox("Mostrar solo fallidos", value=False)
-show_only_hard_gates   = st.sidebar.checkbox("Mostrar solo hard gates", value=False)
-show_trace             = st.sidebar.checkbox("Mostrar trazas técnicas", value=True)
-show_metrics           = st.sidebar.checkbox("Mostrar métricas de latencia", value=True)
-show_scenario_trace    = st.sidebar.checkbox("Mostrar trace agregado del escenario", value=False)
-
-selected_levels = st.sidebar.multiselect(
-    "Filtrar por nivel",
-    options=["basic", "intermediate", "advanced", "legacy"],
-    default=["basic", "intermediate", "advanced", "legacy"],
-)
-selected_categories = st.sidebar.multiselect(
-    "Filtrar por categoría",
-    options=["security", "business", "rag", "data", "memory"],
-    default=["security", "business", "rag", "data", "memory"],
-)
-
-st.sidebar.markdown("---")
-st.sidebar.header("📁 Submissions")
-submissions_dir = st.sidebar.text_input(
-    "Carpeta de submissions (ZIPs)",
-    value="submissions/",
-    help="Cada ZIP debe contener core/agent.py con create_agent(streaming)",
-)
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Helper: render single-agent results (used by both Tab 1 and Tab 2)
-# ─────────────────────────────────────────────────────────────────────────────
-
-def render_results(payload: Dict[str, Any], team_label: str = ""):
-    """Render full evaluation results for a single agent/team."""
-    summary = payload.get("summary", {})
-    scenario_results = payload.get("scenario_results", []) or []
-
-    # Apply filters
-    scenario_results = [
-        s for s in scenario_results
-        if s.get("level", "legacy") in selected_levels
-        and s.get("category") in selected_categories
-    ]
-    if show_only_failed:
-        scenario_results = [s for s in scenario_results if not s.get("passed", False)]
-    if show_only_hard_gates:
-        scenario_results = [s for s in scenario_results if s.get("hard_gate", False)]
-
-    scenario_df = build_scenario_df(scenario_results)
-    step_df = build_step_df(scenario_results)
-
-    total_scenarios   = len(scenario_df)
-    total_steps       = len(step_df)
-    passed_scenarios  = int(scenario_df["passed"].sum()) if not scenario_df.empty else 0
-    avg_score         = round(float(scenario_df["scenario_score"].mean()), 1) if not scenario_df.empty else 0.0
-    avg_trt           = round(float(step_df["trt_ms"].mean()), 1) if not step_df.empty and step_df["trt_ms"].notna().any() else None
-    hard_gate_failed  = [s.get("id") for s in scenario_results if s.get("hard_gate") and not s.get("passed")]
-    disqualified      = len(hard_gate_failed) > 0
-
-    if team_label:
-        st.subheader(f"📊 Resultados — {team_label}")
-
-    c1, c2, c3, c4, c5 = st.columns(5)
-    c1.metric("Escenarios", total_scenarios)
-    c2.metric("Aprobados", passed_scenarios)
-    c3.metric("Descalificado", "Sí ❌" if disqualified else "No ✅")
-    c4.metric("Hard gates fallidos", len(hard_gate_failed))
-    c5.metric("Steps totales", total_steps)
-
-    c6, c7, c8 = st.columns(3)
-    c6.metric("Score promedio", f"{avg_score}%")
-    c7.metric("TRT promedio step", f"{avg_trt} ms" if avg_trt is not None else "N/D")
-    failure_steps = int((~step_df["passed"]).sum()) if not step_df.empty else 0
-    c8.metric("Steps fallidos", failure_steps)
-
-    if disqualified:
-        st.error(f"⛔ Descalificado por hard gates: {', '.join(hard_gate_failed)}")
-    else:
-        st.success("✅ Sin descalificación por hard gates.")
-
-    # Level breakdown
-    st.subheader("📊 Resumen por nivel")
-    if not scenario_df.empty:
-        level_rows = []
-        for level in ["basic", "intermediate", "advanced", "legacy"]:
-            subset = scenario_df[scenario_df["level"] == level]
-            if subset.empty:
-                continue
-            t = len(subset)
-            p = int(subset["passed"].sum())
-            level_rows.append({
-                "nivel": level, "total": t, "aprobados": p,
-                "fallidos": t - p,
-                "pass_rate": f"{round((p/t)*100,1)}%" if t else "—",
-            })
-        st.dataframe(pd.DataFrame(level_rows), use_container_width=True, hide_index=True)
-    else:
-        st.info("No hay escenarios con los filtros actuales.")
-
-    # Failure reasons
-    st.subheader("🚨 Motivos de fallo más frecuentes")
-    if not step_df.empty:
-        failed_df = step_df[step_df["passed"] == False]  # noqa: E712
-        if not failed_df.empty:
-            counts = (
-                failed_df["failure_reason"].fillna("otro").replace("", "otro")
-                .value_counts().reset_index()
-            )
-            counts.columns = ["motivo", "cantidad"]
-            st.dataframe(counts, use_container_width=True, hide_index=True)
-        else:
-            st.success("No hubo steps fallidos con los filtros actuales.")
-
-    # Scenario table
-    st.subheader("📋 Escenarios evaluados")
-    if not scenario_df.empty:
-        display_cols = ["id", "name", "category", "level", "hard_gate",
-                        "reset_policy", "steps_run", "scenario_score", "passed",
-                        "status", "primary_failure_reason"]
-        st.dataframe(scenario_df[display_cols], use_container_width=True, hide_index=True)
-
-    # Step table
-    st.subheader("🧩 Detalle por step")
-    if not step_df.empty:
-        step_cols = ["scenario_id", "step_index", "step_name", "judge_category",
-                     "expectation", "score", "passed", "status", "failure_reason",
-                     "trt_ms", "e2e_ms", "ttft_ms"]
-        st.dataframe(step_df[step_cols], use_container_width=True, hide_index=True)
-
-    # Scenario inspection
-    st.subheader("🔍 Inspección de escenarios")
-    for scenario in scenario_results:
-        passed_icon = safe_bool_icon(scenario.get("passed"))
-        hard_gate_tag = " | HARD GATE" if scenario.get("hard_gate") else ""
-        title = (
-            f"{passed_icon} {scenario.get('id')}: {scenario.get('name')}"
-            f" | {scenario.get('scenario_score', 0)}/100"
-            f" | {scenario.get('status', 'unknown')}{hard_gate_tag}"
-        )
-        with st.expander(title):
-            m1, m2, m3, m4, m5 = st.columns(5)
-            m1.write(f"**Categoría:** {scenario.get('category')}")
-            m2.write(f"**Nivel:** {scenario.get('level')}")
-            m3.write(f"**Hard gate:** {scenario.get('hard_gate')}")
-            m4.write(f"**Reset policy:** {scenario.get('reset_policy')}")
-            m5.write(f"**Steps:** {scenario.get('steps_run')}")
-
-            if scenario.get("error"):
-                st.error(scenario.get("error"))
-
-            for step in (scenario.get("step_results") or []):
-                step_icon = safe_bool_icon(step.get("passed"))
-                reason = parse_failure_reason(step) if not step.get("passed", False) else ""
-                step_title = (
-                    f"{step_icon} Step {int(step.get('step_index', 0)) + 1}: "
-                    f"{step.get('step_name')} | juez={step.get('judge_category')} "
-                    f"| score={step.get('score', 0)}"
-                )
-                with st.container(border=True):
-                    st.markdown(f"**{step_title}**")
-                    if reason:
-                        st.caption(f"Motivo de fallo: **{reason}**")
-
-                    col_a, col_b = st.columns(2)
-                    with col_a:
-                        st.write("**Conversación**")
-                        st.chat_message("user").write(step.get("input", ""))
-                        st.chat_message("assistant").write(step.get("response", ""))
-                    with col_b:
-                        st.write("**Veredicto del juez**")
-                        if step.get("passed"):
-                            st.success(step.get("feedback", "Sin feedback"))
-                        else:
-                            st.warning(step.get("feedback", "Sin feedback"))
-                        st.write(f"**Estado:** {step.get('status', 'unknown')}")
-                        st.write(f"**Aprobado:** {step.get('passed', False)}")
-                        st.write(f"**Score:** {step.get('score', 0)}")
-
-                    if (expected := step.get("expected_data") or {}):
-                        st.write("**Expected data / contrato del caso**")
-                        st.json(expected)
-
-                    if show_metrics:
-                        metrics = step.get("metrics", {}) or {}
-                        if metrics:
-                            mx1, mx2, mx3 = st.columns(3)
-                            mx1.metric("TRT", format_ms(metrics.get("trt_ms")))
-                            mx2.metric("E2E", format_ms(metrics.get("e2e_ms")))
-                            mx3.metric("TTFT", format_ms(metrics.get("ttft_ms")))
-
-                    if show_trace and step.get("trace"):
-                        st.write("**Trace técnico del step**")
-                        st.json(step.get("trace"))
-
-            if show_scenario_trace and scenario.get("scenario_trace"):
-                st.write("**Trace agregado del escenario**")
-                st.json(scenario.get("scenario_trace"))
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Helper: build comparison table from multiple payloads
-# ─────────────────────────────────────────────────────────────────────────────
-
-def build_comparison_df(payloads: Dict[str, Dict[str, Any]]) -> pd.DataFrame:
-    """Build a comparison DataFrame: one row per team."""
-    rows = []
-    for team_name, payload in payloads.items():
+    for team, payload in payloads.items():
         summary = payload.get("summary", {})
-        scenario_results = payload.get("scenario_results", []) or []
+        scenarios = payload.get("scenario_results", []) or []
+        total = summary.get("total_scenarios", len(scenarios))
+        passed = summary.get("passed_scenarios", sum(1 for s in scenarios if s.get("passed")))
+        disq = summary.get("disqualified", bool(summary.get("hard_gate_failed_ids")))
 
-        total = summary.get("total_scenarios", 0)
-        passed = summary.get("passed_scenarios", 0)
-        pass_rate = round((passed / total) * 100, 1) if total else 0
-        disq = summary.get("disqualified", False)
-        hard_fails = ", ".join(summary.get("hard_gate_failed_ids", [])) or "—"
-
-        avg_score = 0.0
-        if scenario_results:
-            avg_score = round(
-                sum(s.get("scenario_score", 0) for s in scenario_results) / len(scenario_results), 1
-            )
-
-        # Category breakdown
         cat_scores: Dict[str, List[float]] = {}
-        for s in scenario_results:
-            cat = s.get("category", "unknown")
+        for s in scenarios:
+            cat = s.get("category", "?")
             cat_scores.setdefault(cat, [])
-            cat_scores[cat].append(s.get("scenario_score", 0))
+            cat_scores[cat].append(float(s.get("scenario_score", 0)))
+
+        avg = round(sum(s.get("scenario_score", 0) for s in scenarios) / len(scenarios), 1) if scenarios else 0.0
 
         row: Dict[str, Any] = {
-            "equipo": team_name,
-            "total": total,
-            "aprobados": passed,
-            "pass_rate_%": pass_rate,
-            "score_promedio": avg_score,
+            "equipo": team,
+            "aprobados": f"{passed}/{total}",
+            "pass %": round(passed / total * 100, 1) if total else 0.0,
+            "score avg": avg,
             "descalificado": "Sí ❌" if disq else "No ✅",
-            "hard_gates_fallidos": hard_fails,
+            "hard gates": ", ".join(summary.get("hard_gate_failed_ids", [])) or "—",
         }
         for cat in ["security", "business", "rag", "data", "memory"]:
-            scores = cat_scores.get(cat, [])
-            row[f"score_{cat}"] = round(sum(scores) / len(scores), 1) if scores else "—"
-
+            sc = cat_scores.get(cat, [])
+            row[cat] = round(sum(sc) / len(sc), 1) if sc else "—"
         rows.append(row)
 
     df = pd.DataFrame(rows)
-    if not df.empty and "score_promedio" in df.columns:
-        df = df.sort_values("score_promedio", ascending=False).reset_index(drop=True)
-        df.insert(0, "ranking", range(1, len(df) + 1))
+    if not df.empty and "pass %" in df.columns:
+        df = df.sort_values("pass %", ascending=False).reset_index(drop=True)
+        df.insert(0, "#", range(1, len(df) + 1))
     return df
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# TABS
+# Filters (read from session_state, set in sidebar)
 # ─────────────────────────────────────────────────────────────────────────────
 
-tab_mine, tab_submissions, tab_compare, tab_saved = st.tabs([
-    "🤖 Mi Agente",
-    "📦 Submissions",
-    "🏆 Comparación de equipos",
-    "📂 Resultados guardados",
+def _apply_filters(scenarios: List[Dict]) -> List[Dict]:
+    lvl = st.session_state.get("_lvl", ["basic", "intermediate", "advanced", "legacy"])
+    cat = st.session_state.get("_cat", ["security", "business", "rag", "data", "memory"])
+    only_fail = st.session_state.get("_only_fail", False)
+    only_gate = st.session_state.get("_only_gate", False)
+
+    out = [
+        s for s in scenarios
+        if s.get("level", "legacy") in lvl and s.get("category", "") in cat
+    ]
+    if only_fail:
+        out = [s for s in out if not s.get("passed", False)]
+    if only_gate:
+        out = [s for s in out if s.get("hard_gate", False)]
+    return out
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Render: single team results
+# ─────────────────────────────────────────────────────────────────────────────
+
+def render_team(payload: Dict, team_name: str = ""):
+    if payload.get("error"):
+        st.error(f"Error durante evaluación: {payload['error']}")
+        return
+
+    scenarios = _apply_filters(payload.get("scenario_results", []) or [])
+
+    if not scenarios:
+        st.info("No hay escenarios con los filtros actuales.")
+        return
+
+    total = len(scenarios)
+    passed = sum(1 for s in scenarios if s.get("passed"))
+    avg_score = round(sum(s.get("scenario_score", 0) for s in scenarios) / total, 1) if total else 0
+    hard_fails = [s["id"] for s in scenarios if s.get("hard_gate") and not s.get("passed")]
+    disq = len(hard_fails) > 0
+
+    # Latency across all steps
+    all_steps = [st for s in scenarios for st in (s.get("step_results") or [])]
+    trt_vals = [m for st in all_steps for m in [(st.get("metrics") or {}).get("trt_ms")] if m is not None]
+    avg_trt = round(sum(trt_vals) / len(trt_vals)) if trt_vals else None
+
+    # KPIs
+    k1, k2, k3, k4, k5, k6 = st.columns(6)
+    k1.metric("Escenarios", total)
+    k2.metric("Aprobados", f"{passed} / {total}")
+    k3.metric("Pass rate", _pct(passed, total))
+    k4.metric("Score promedio", f"{avg_score}")
+    k5.metric("TRT promedio", f"{avg_trt} ms" if avg_trt is not None else "—")
+    k6.metric("Hard gates fallidos", len(hard_fails))
+
+    if disq:
+        st.error(f"⛔ **Descalificado** · Hard gates: {', '.join(hard_fails)}")
+    else:
+        st.success("✅ Sin descalificación por hard gates")
+
+    # Category breakdown
+    st.markdown("#### Por categoría")
+    cat_data: Dict[str, Any] = {}
+    for s in scenarios:
+        c = s.get("category", "?")
+        cat_data.setdefault(c, {"passed": 0, "total": 0, "scores": []})
+        cat_data[c]["total"] += 1
+        cat_data[c]["scores"].append(s.get("scenario_score", 0))
+        if s.get("passed"):
+            cat_data[c]["passed"] += 1
+
+    cat_rows = []
+    for c, d in sorted(cat_data.items()):
+        sc = d["scores"]
+        avg = round(sum(sc) / len(sc), 1) if sc else 0
+        cat_rows.append({
+            "categoría": c,
+            "aprobados": f"{d['passed']}/{d['total']}",
+            "pass %": _pct(d["passed"], d["total"]),
+            "score avg": avg,
+        })
+    st.dataframe(pd.DataFrame(cat_rows), use_container_width=True, hide_index=True)
+
+    # Scenario table
+    st.markdown("#### Escenarios")
+    df = build_scenario_df(scenarios)
+    if not df.empty:
+        st.dataframe(df, use_container_width=True, hide_index=True)
+
+    # Scenario inspection
+    st.markdown("#### Detalle por escenario")
+    for scenario in scenarios:
+        icon = _icon(scenario.get("passed"))
+        hg = "  🔒" if scenario.get("hard_gate") else ""
+        score = scenario.get("scenario_score", 0)
+        title = f"{icon} **{scenario.get('id')}** · {scenario.get('name')} · {score}/100{hg}"
+
+        with st.expander(title):
+            c1, c2, c3, c4 = st.columns(4)
+            c1.caption(f"**Categoría:** {scenario.get('category')}")
+            c2.caption(f"**Nivel:** {scenario.get('level')}")
+            c3.caption(f"**Estado:** {scenario.get('status')}")
+            c4.caption(f"**Reset policy:** {scenario.get('reset_policy')}")
+
+            if scenario.get("error"):
+                st.error(scenario["error"])
+
+            for step in (scenario.get("step_results") or []):
+                with st.container(border=True):
+                    h1, h2 = st.columns([1, 3])
+                    h1.markdown(
+                        f"**Step {int(step.get('step_index', 0)) + 1}: {step.get('step_name')}**"
+                    )
+                    h1.caption(f"Juez: `{step.get('judge_category')}`")
+                    h1.caption(f"Score: **{step.get('score', 0)}** / 100")
+                    metrics = step.get("metrics") or {}
+                    trt = metrics.get("trt_ms")
+                    e2e = metrics.get("e2e_ms")
+                    ttft = metrics.get("ttft_ms")
+                    if any(v is not None for v in (trt, e2e, ttft)):
+                        h1.caption(f"TRT: {_ms(trt)}  ·  E2E: {_ms(e2e)}  ·  TTFT: {_ms(ttft)}")
+                    if step.get("passed"):
+                        h1.success("Aprobado ✅")
+                    else:
+                        h1.error("Fallido ❌")
+
+                    with h2:
+                        st.chat_message("user").write(step.get("input") or "—")
+                        st.chat_message("assistant").write(step.get("response") or "—")
+
+                    fb = step.get("feedback")
+                    if fb:
+                        if step.get("passed"):
+                            st.success(fb)
+                        else:
+                            st.warning(fb)
+
+                    col_exp1, col_exp2 = st.columns(2)
+                    with col_exp1:
+                        if step.get("expected_data"):
+                            with st.expander("Expected data"):
+                                st.json(step["expected_data"])
+                    with col_exp2:
+                        if st.session_state.get("_show_trace") and step.get("trace"):
+                            with st.expander(f"Tool trace ({len(step['trace'])} calls)"):
+                                st.json(step["trace"])
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Render: comparison ranking + scenario grid
+# ─────────────────────────────────────────────────────────────────────────────
+
+def render_comparison(payloads: Dict[str, Dict]):
+    if len(payloads) < 2:
+        st.info("Selecciona al menos 2 equipos.")
+        return
+
+    st.markdown("#### Ranking")
+    df = build_comparison_df(payloads)
+    if not df.empty:
+        st.dataframe(df, use_container_width=True, hide_index=True)
+
+        # Category bar chart
+        cat_cols = ["security", "business", "rag", "data", "memory"]
+        chart_df = df.set_index("equipo")[cat_cols].copy()
+        chart_df = chart_df.replace("—", None)
+        for col in cat_cols:
+            chart_df[col] = pd.to_numeric(chart_df[col], errors="coerce")
+        st.markdown("#### Score por categoría")
+        st.bar_chart(chart_df)
+
+    # Disqualified notice
+    disq_teams = df[df["descalificado"] == "Sí ❌"]["equipo"].tolist() if not df.empty else []
+    if disq_teams:
+        st.error(f"⛔ Descalificados: {', '.join(disq_teams)}")
+
+    # Per-scenario grid
+    st.markdown("#### Comparación por escenario")
+    all_ids = sorted({
+        s["id"]
+        for p in payloads.values()
+        for s in (p.get("scenario_results") or [])
+    })
+
+    if all_ids:
+        cmp_rows = []
+        for sid in all_ids:
+            scenario_ref = next(
+                (s for p in payloads.values() for s in (p.get("scenario_results") or []) if s.get("id") == sid),
+                {}
+            )
+            row: Dict[str, Any] = {
+                "id": sid,
+                "cat": scenario_ref.get("category", ""),
+                "nivel": scenario_ref.get("level", ""),
+                "hard gate": "🔒" if scenario_ref.get("hard_gate") else "",
+            }
+            for team, payload in payloads.items():
+                sc = next(
+                    (s for s in (payload.get("scenario_results") or []) if s.get("id") == sid),
+                    None,
+                )
+                if sc is not None:
+                    row[team] = f"{'✅' if sc.get('passed') else '❌'} {sc.get('scenario_score', 0)}"
+                else:
+                    row[team] = "—"
+            cmp_rows.append(row)
+
+        st.dataframe(pd.DataFrame(cmp_rows), use_container_width=True, hide_index=True)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Page config + sidebar
+# ─────────────────────────────────────────────────────────────────────────────
+
+st.set_page_config(page_title="OmniJudge", layout="wide", page_icon="🛡️")
+
+with st.sidebar:
+    st.title("🛡️ OmniJudge")
+    st.caption("OmniRetail · Evaluación de Agentes")
+    st.markdown("---")
+
+    st.markdown("**Filtros de visualización**")
+    lvl = st.multiselect(
+        "Nivel",
+        ["basic", "intermediate", "advanced", "legacy"],
+        default=["basic", "intermediate", "advanced", "legacy"],
+        key="sb_lvl",
+    )
+    cat = st.multiselect(
+        "Categoría",
+        ["security", "business", "rag", "data", "memory"],
+        default=["security", "business", "rag", "data", "memory"],
+        key="sb_cat",
+    )
+    only_fail = st.checkbox("Solo fallidos", False, key="sb_fail")
+    only_gate = st.checkbox("Solo hard gates", False, key="sb_gate")
+    show_trace = st.checkbox("Mostrar tool traces", False, key="sb_trace")
+
+    # Persist to session_state keys read by _apply_filters
+    st.session_state["_lvl"] = lvl
+    st.session_state["_cat"] = cat
+    st.session_state["_only_fail"] = only_fail
+    st.session_state["_only_gate"] = only_gate
+    st.session_state["_show_trace"] = show_trace
+
+    st.markdown("---")
+    submissions_dir = st.text_input("Carpeta de submissions", "submissions/", key="sb_subdir")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Main tabs
+# ─────────────────────────────────────────────────────────────────────────────
+
+st.title("🛡️ OmniRetail · Evaluación de Agentes")
+
+tab_eval, tab_results, tab_compare = st.tabs([
+    "▶️ Evaluar",
+    "📂 Resultados",
+    "🏆 Comparar",
 ])
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# TAB 1 — Mi Agente (comportamiento original intacto)
+# TAB 1 — Evaluar
 # ─────────────────────────────────────────────────────────────────────────────
 
-with tab_mine:
-    st.markdown("Evalúa tu agente propio (`core/agent.py`) con todos los escenarios del golden dataset.")
-
-    if st.button("🚀 Ejecutar Evaluación", key="run_mine"):
-        try:
-            from evaluator.engine import EvaluationEngine
-            engine = EvaluationEngine()
-            with st.spinner("Evaluando escenarios..."):
-                raw_payload = engine.run_all()
-
-            payload = normalize_old_payload(raw_payload) if isinstance(raw_payload, list) else raw_payload
-            render_results(payload)
-
-        except Exception as e:
-            st.error("Error ejecutando la evaluación")
-            st.exception(e)
-    else:
-        st.info("Presiona el botón para iniciar la evaluación automática de tu agente.")
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# TAB 2 — Submissions
-# ─────────────────────────────────────────────────────────────────────────────
-
-with tab_submissions:
+with tab_eval:
     st.markdown(
-        "Cargá los ZIPs de los equipos participantes desde la carpeta configurada en la barra lateral. "
-        "Cada ZIP debe tener `core/agent.py` con la función `create_agent(streaming: bool)`."
+        "Carga ZIPs de equipos, valida el contrato `core/agent.py::create_agent()` "
+        "y ejecuta la evaluación completa."
     )
 
-    subs_path = Path(submissions_dir)
+    # Source: folder or drag-and-drop
+    source = st.radio("Fuente de submissions", ["📁 Carpeta", "⬆️ Subir ZIPs"], horizontal=True)
 
-    # ── Detect available ZIPs ─────────────────────────────────────────
-    if not subs_path.exists():
-        st.warning(f"La carpeta `{submissions_dir}` no existe. Creala y copiá los ZIPs ahí.")
+    subs_path: Optional[Path] = None
+
+    if source == "⬆️ Subir ZIPs":
+        import tempfile
+
+        uploaded = st.file_uploader(
+            "Arrastrá los ZIPs de los equipos aquí",
+            type="zip",
+            accept_multiple_files=True,
+        )
+        if uploaded:
+            tmp = Path(tempfile.mkdtemp(prefix="omni_ui_"))
+            for uf in uploaded:
+                (tmp / uf.name).write_bytes(uf.getvalue())
+            subs_path = tmp
+            st.success(f"Subidos: {', '.join(uf.name for uf in uploaded)}")
     else:
-        zip_files = sorted(subs_path.glob("*.zip"))
-        if not zip_files:
-            st.info(f"No hay archivos `.zip` en `{submissions_dir}`.")
-        else:
-            st.success(f"Se encontraron **{len(zip_files)}** submission(s): "
-                       + ", ".join(z.stem for z in zip_files))
-
-            # ── Load & validate all submissions ───────────────────────
-            col_load, col_reload = st.columns([4, 1])
-            if col_load.button("🔍 Cargar y validar submissions", key="load_subs"):
-                from submission_loader import SubmissionLoader
-                loader = SubmissionLoader(submissions_dir=submissions_dir)
-                with st.spinner("Cargando submissions..."):
-                    loaded = loader.load_all()
-                st.session_state["submissions"] = loaded
-                st.session_state.pop("selected_teams_val", None)  # reset selección
-
-            if col_reload.button("🔄", key="reload_subs", help="Limpiar y recargar"):
-                st.session_state.pop("submissions", None)
-                st.session_state.pop("selected_teams_val", None)
-                st.session_state.pop("sub_results", None)
-                st.rerun()
-
-            submissions = st.session_state.get("submissions", [])
-
-            if not submissions:
-                st.info("Presioná **Cargar y validar submissions** para comenzar.")
+        subs_path = Path(submissions_dir)
+        if subs_path.exists():
+            zips = sorted(subs_path.glob("*.zip"))
+            if zips:
+                st.info(f"**{len(zips)}** ZIP(s) en `{subs_path}`: " + ", ".join(z.stem for z in zips))
             else:
-                st.subheader("📋 Estado de los submissions")
-                status_rows = []
-                for sub in submissions:
-                    checks_str = " | ".join(
-                        f"{'✓' if c.passed else '✗'} {c.name}"
-                        for c in sub.contract_checks
+                st.warning(f"No hay ZIPs en `{subs_path}`.")
+        else:
+            st.warning(f"Carpeta `{subs_path}` no existe.")
+
+    # Load & validate
+    col_load, col_clear = st.columns([1, 1])
+    if col_load.button("🔍 Cargar y validar", key="load_btn", type="secondary"):
+        if subs_path and subs_path.exists():
+            from submission_loader import SubmissionLoader
+            with st.spinner("Cargando y validando submissions..."):
+                loader = SubmissionLoader(submissions_dir=str(subs_path))
+                loaded = loader.load_all()
+            st.session_state["subs"] = loaded
+            st.session_state.pop("eval_results", None)
+        else:
+            st.error("Carpeta no válida o sin ZIPs.")
+
+    if col_clear.button("🔄 Limpiar sesión", key="clear_btn"):
+        for k in ("subs", "eval_results"):
+            st.session_state.pop(k, None)
+        st.rerun()
+
+    submissions = st.session_state.get("subs", [])
+
+    if submissions:
+        st.markdown("---")
+        st.markdown("#### Estado de los submissions")
+
+        status_rows = []
+        for sub in submissions:
+            checks = "  ·  ".join(
+                f"{'✓' if c.passed else '✗'} {c.name}" for c in sub.contract_checks
+            )
+            status_rows.append({
+                "equipo": sub.team_name,
+                "listo": _icon(sub.ready),
+                "contrato": checks,
+                "error": sub.load_error or "—",
+            })
+        st.dataframe(pd.DataFrame(status_rows), use_container_width=True, hide_index=True)
+
+        ready = [s for s in submissions if s.ready]
+        broken = [s for s in submissions if not s.ready]
+
+        if broken:
+            with st.expander(f"⚠️ {len(broken)} submission(s) con errores"):
+                for sub in broken:
+                    st.error(f"**{sub.team_name}**: {sub.load_error}")
+                    for c in [c for c in sub.contract_checks if not c.passed]:
+                        st.caption(f"  ✗ {c.name}: {c.detail}")
+
+        if ready:
+            st.markdown("---")
+            st.markdown("#### Configurar evaluación")
+
+            team_names = [s.team_name for s in ready]
+            selected = st.multiselect(
+                "Equipos a evaluar", team_names, default=team_names, key="sel_teams"
+            )
+
+            col_cats, col_lvls = st.columns(2)
+            eval_cats = col_cats.multiselect(
+                "Categorías",
+                ["security", "business", "rag", "data", "memory"],
+                default=["security", "business", "rag", "data", "memory"],
+                key="eval_cats",
+            )
+            eval_levels = col_lvls.multiselect(
+                "Niveles",
+                ["basic", "intermediate", "advanced"],
+                default=["basic", "intermediate", "advanced"],
+                key="eval_levels",
+            )
+
+            run_btn = st.button(
+                f"▶️ Evaluar {len(selected)} equipo(s)",
+                type="primary",
+                disabled=len(selected) == 0,
+                key="run_eval",
+            )
+
+            if run_btn and selected:
+                from multi_engine import MultiEngine
+
+                to_eval = [s for s in ready if s.team_name in selected]
+                eval_results: Dict[str, Any] = {}
+
+                progress = st.progress(0.0, text="Iniciando evaluación...")
+                status_box = st.empty()
+
+                for i, sub in enumerate(to_eval):
+                    progress.progress(
+                        i / len(to_eval),
+                        text=f"Evaluando {sub.team_name} ({i + 1}/{len(to_eval)})...",
                     )
-                    status_rows.append({
-                        "equipo": sub.team_name,
-                        "listo": "✅" if sub.ready else "❌",
-                        "contrato": checks_str,
-                        "error": sub.load_error or "—",
-                    })
-                st.dataframe(pd.DataFrame(status_rows), use_container_width=True, hide_index=True)
+                    status_box.info(f"⏳ Evaluando **{sub.team_name}**...")
 
-                ready_subs = [s for s in submissions if s.ready]
-                broken_subs = [s for s in submissions if not s.ready]
-
-                if broken_subs:
-                    with st.expander(f"⚠️ {len(broken_subs)} submission(s) con errores"):
-                        for sub in broken_subs:
-                            st.error(f"**{sub.team_name}**: {sub.load_error}")
-                            for c in sub.contract_checks:
-                                if not c.passed:
-                                    st.caption(f"  ✗ {c.name}: {c.detail}")
-
-                if ready_subs:
-                    # ── Team selector — selección persiste entre reruns ─
-                    team_names = [s.team_name for s in ready_subs]
-                    if "selected_teams_val" not in st.session_state:
-                        st.session_state["selected_teams_val"] = team_names
-
-                    selected_teams = st.multiselect(
-                        "Seleccioná qué equipos evaluar:",
-                        options=team_names,
-                        default=st.session_state["selected_teams_val"],
-                        key="selected_teams",
-                    )
-                    st.session_state["selected_teams_val"] = selected_teams
-
-                    col_run, col_clear = st.columns([3, 1])
-                    n_sel = len(selected_teams)
-                    run_btn = col_run.button(
-                        f"▶️ Evaluar {n_sel} equipo(s)" if n_sel > 0 else "▶️ Evaluar (seleccioná equipos arriba)",
-                        key="run_subs",
-                        type="primary",
-                        disabled=n_sel == 0,
-                    )
-                    if col_clear.button("🗑️ Limpiar resultados", key="clear_results"):
-                        st.session_state.pop("sub_results", None)
-                        st.rerun()
-
-                    if run_btn and n_sel > 0:
-                        import traceback as _tb
-                        from multi_engine import MultiEngine
-
-                        # Resolver session_context del PROYECTO antes de cargar ZIPs
-                        import importlib
-                        _sc = importlib.import_module("core.session_context")
-                        _session_fns = {
-                            "reset_session":         _sc.reset_session,
-                            "get_tool_trace":        _sc.get_tool_trace,
-                            "get_tool_trace_length": _sc.get_tool_trace_length,
-                            "get_tool_trace_since":  _sc.get_tool_trace_since,
+                    try:
+                        engine = MultiEngine(
+                            create_agent_fn=sub.create_agent,
+                            team_name=sub.team_name,
+                            session_fns=sub._session_fns,  # team-specific trace fns
+                        )
+                        result = engine.run_all(
+                            category_filter=eval_cats or None,
+                            level_filter=eval_levels or None,
+                        )
+                        eval_results[sub.team_name] = result
+                        rate = result.get("summary", {}).get("pass_rate", 0)
+                        status_box.success(f"✅ **{sub.team_name}** · pass rate: {rate}%")
+                    except Exception as e:
+                        detail = _tb.format_exc()
+                        status_box.error(f"❌ **{sub.team_name}** · {e}")
+                        st.code(detail, language="python")
+                        eval_results[sub.team_name] = {
+                            "team_name": sub.team_name,
+                            "summary": {},
+                            "scenario_results": [],
+                            "error": str(e),
                         }
 
-                        sub_results: Dict[str, Any] = {}
-                        to_evaluate = [s for s in ready_subs if s.team_name in selected_teams]
+                progress.progress(1.0, text="✅ Evaluación completa")
+                st.session_state["eval_results"] = eval_results
 
-                        print(f"[eval] Iniciando evaluación de {len(to_evaluate)} equipos")
-                        progress = st.progress(0, text="Iniciando evaluación...")
-                        status_box = st.empty()
+                saved_path, run_id = save_run(eval_results)
+                st.success(f"💾 Resultados guardados → `{saved_path.name}`  ·  Run ID: `{run_id}`")
+                st.rerun()
 
-                        for i, sub in enumerate(to_evaluate):
-                            progress.progress(
-                                i / len(to_evaluate),
-                                text=f"Evaluando {sub.team_name} ({i+1}/{len(to_evaluate)})..."
-                            )
-                            status_box.info(f"⏳ Evaluando **{sub.team_name}**...")
-                            print(f"[eval] → {sub.team_name} ready={sub.ready}")
-                            try:
-                                engine = MultiEngine(
-                                    create_agent_fn=sub.create_agent,
-                                    team_name=sub.team_name,
-                                    session_fns=_session_fns,
-                                )
-                                result = engine.run_all(
-                                    level_filter=selected_levels if selected_levels else None,
-                                    category_filter=selected_categories if selected_categories else None,
-                                )
-                                sub_results[sub.team_name] = result
-                                print(f"[eval] ✓ {sub.team_name} completado")
-                            except Exception as e:
-                                err_detail = _tb.format_exc()
-                                print(f"[eval] ✗ {sub.team_name} ERROR:\n{err_detail}")
-                                st.error(f"Error evaluando **{sub.team_name}**: {e}")
-                                st.code(err_detail)
-                                sub_results[sub.team_name] = {
-                                    "team_name": sub.team_name,
-                                    "summary": {},
-                                    "scenario_results": [],
-                                    "error": str(e),
-                                }
+        # Show current session results
+        eval_results = st.session_state.get("eval_results", {})
+        if eval_results:
+            st.markdown("---")
+            st.markdown("#### Resultados de la sesión")
 
-                        progress.progress(1.0, text="✅ Evaluación completa")
-                        status_box.success("✅ Evaluación completa")
-                        st.session_state["sub_results"] = sub_results
+            comp_df = build_comparison_df(eval_results)
+            if not comp_df.empty:
+                st.dataframe(comp_df, use_container_width=True, hide_index=True)
 
-                        # ── Persist to disk ───────────────────────────
-                        run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
-                        saved_path = save_run(sub_results, run_id)
-                        st.session_state["last_run_id"] = run_id
-                        st.success(f"Resultados guardados → `{saved_path}` · Compartí: `?run={run_id}`")
-                        st.rerun()
-
-                    # ── Show results per team ─────────────────────────
-                    sub_results = st.session_state.get("sub_results", {})
-                    if sub_results:
-                        team_tabs = st.tabs([f"📊 {t}" for t in sub_results.keys()])
-                        for team_tab, (team_name, payload) in zip(team_tabs, sub_results.items()):
-                            with team_tab:
-                                if payload.get("error"):
-                                    st.error(f"Error durante evaluación: {payload['error']}")
-                                else:
-                                    render_results(payload, team_label=team_name)
+            st.markdown("---")
+            team_tabs = st.tabs([f"📊 {t}" for t in eval_results])
+            for tab, (team, payload) in zip(team_tabs, eval_results.items()):
+                with tab:
+                    render_team(payload, team)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# TAB 3 — Comparación de equipos
+# TAB 2 — Resultados guardados
+# ─────────────────────────────────────────────────────────────────────────────
+
+with tab_results:
+    st.markdown(
+        "Explora resultados de evaluaciones anteriores. "
+        "Compatible con archivos guardados por esta app y por `batch_eval.py`."
+    )
+
+    saved = list_saved_runs()
+
+    if not saved:
+        st.info(f"No hay resultados en `{RESULTS_DIR}/`. Evalúa equipos en la pestaña **Evaluar**.")
+    else:
+        run_map = {r["run_id"]: r for r in saved}
+        run_ids = list(run_map.keys())
+
+        # Auto-load from URL ?run=<id>
+        url_run = st.query_params.get("run")
+        default_idx = run_ids.index(url_run) if url_run and url_run in run_ids else 0
+
+        col_sel, col_del = st.columns([5, 1])
+        selected_run = col_sel.selectbox(
+            "Run guardado",
+            run_ids,
+            index=default_idx,
+            format_func=lambda rid: (
+                f"{rid}  —  "
+                + ", ".join(run_map[rid]["teams"][:4])
+                + ("…" if len(run_map[rid]["teams"]) > 4 else "")
+                + f"  [{run_map[rid]['saved_at'][:10]}]"
+            ),
+        )
+        st.query_params["run"] = selected_run
+
+        meta = run_map[selected_run]
+        run_files = meta.get("_paths", [])
+
+        col_info, col_dl, col_del2 = st.columns([3, 1, 1])
+        col_info.caption(
+            f"Equipos: {', '.join(meta['teams'])}  ·  "
+            f"Fecha: {meta['saved_at'][:19].replace('T', ' ')}"
+        )
+        if run_files:
+            raw = "\n\n---\n\n".join(
+                f.read_text(encoding="utf-8") for f in run_files
+            )
+            col_dl.download_button(
+                "⬇️ JSON",
+                data=raw,
+                file_name=f"{selected_run}.json",
+                mime="application/json",
+            )
+        if col_del2.button("🗑️ Eliminar", key="del_run"):
+            delete_run(selected_run)
+            st.query_params.pop("run", None)
+            st.rerun()
+
+        st.markdown("---")
+
+        data = load_run(selected_run)
+        if not data:
+            st.error(f"No se pudo cargar el run `{selected_run}`.")
+        else:
+            comp_df = build_comparison_df(data)
+            if not comp_df.empty:
+                st.markdown("#### Ranking")
+                st.dataframe(comp_df, use_container_width=True, hide_index=True)
+
+                chart_df = comp_df.set_index("equipo")[["pass %"]].copy()
+                chart_df["pass %"] = pd.to_numeric(chart_df["pass %"], errors="coerce")
+                st.bar_chart(chart_df)
+
+            st.markdown("---")
+            st.markdown("#### Detalle por equipo")
+            team_tabs = st.tabs([f"📊 {t}" for t in data])
+            for tab, (team, payload) in zip(team_tabs, data.items()):
+                with tab:
+                    render_team(payload, team)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TAB 3 — Comparar
 # ─────────────────────────────────────────────────────────────────────────────
 
 with tab_compare:
     st.markdown(
-        "Ranking comparativo entre todos los equipos evaluados en la pestaña **Submissions**. "
-        "Incluye scores por categoría, estado de hard gates y clasificación final."
+        "Compara equipos de distintos runs a nivel de ranking y de escenario individual."
     )
 
-    sub_results: Dict[str, Any] = st.session_state.get("sub_results", {})
+    saved = list_saved_runs()
 
-    if not sub_results:
-        st.info("Primero evaluá los equipos en la pestaña **Submissions**.")
+    if not saved:
+        st.info("No hay resultados guardados para comparar.")
     else:
-        # ── Ranking table ─────────────────────────────────────────────
-        st.subheader("🏆 Ranking general")
-        comp_df = build_comparison_df(sub_results)
-        if not comp_df.empty:
-            st.dataframe(comp_df, use_container_width=True, hide_index=True)
+        run_ids_all = [r["run_id"] for r in saved]
+        run_map_all = {r["run_id"]: r for r in saved}
 
-            # ── Score bars per team ───────────────────────────────────
-            st.subheader("📊 Score promedio por equipo")
-            chart_df = comp_df[["equipo", "score_promedio"]].copy()
-            chart_df = chart_df.set_index("equipo")
-            st.bar_chart(chart_df)
+        # Run selectors
+        col_ra, col_rb = st.columns(2)
+        run_a = col_ra.selectbox(
+            "Run A",
+            run_ids_all,
+            index=0,
+            key="cmp_ra",
+            format_func=lambda rid: f"{rid}  [{', '.join(run_map_all[rid]['teams'][:3])}]",
+        )
+        run_b = col_rb.selectbox(
+            "Run B",
+            run_ids_all,
+            index=0,
+            key="cmp_rb",
+            format_func=lambda rid: f"{rid}  [{', '.join(run_map_all[rid]['teams'][:3])}]",
+        )
 
-            # ── Category heatmap ──────────────────────────────────────
-            st.subheader("🗂️ Scores por categoría")
-            cat_cols = [c for c in comp_df.columns if c.startswith("score_")]
-            if cat_cols:
-                cat_df = comp_df[["equipo"] + cat_cols].copy()
-                cat_df.columns = ["equipo"] + [c.replace("score_", "") for c in cat_cols]
-                st.dataframe(cat_df, use_container_width=True, hide_index=True)
+        data_a = load_run(run_a) or {}
+        data_b = load_run(run_b) or {}
 
-            # ── Hard gate failures ────────────────────────────────────
-            disq_teams = comp_df[comp_df["descalificado"] == "Sí ❌"]
-            if not disq_teams.empty:
-                st.error(
-                    "⛔ **Equipos descalificados por hard gates**: "
-                    + ", ".join(disq_teams["equipo"].tolist())
-                )
-            else:
-                st.success("✅ Ningún equipo fue descalificado por hard gates.")
+        # Team selectors
+        col_ta, col_tb = st.columns(2)
+        teams_a = col_ta.multiselect(
+            "Equipos de A", list(data_a.keys()),
+            default=list(data_a.keys()), key="cmp_ta"
+        )
+        teams_b = col_tb.multiselect(
+            "Equipos de B", list(data_b.keys()),
+            default=list(data_b.keys()), key="cmp_tb"
+        )
 
-            # ── Per-category leaders ──────────────────────────────────
-            st.subheader("🥇 Líder por categoría")
-            leader_rows = []
-            for cat in ["security", "business", "rag", "data", "memory"]:
-                col = f"score_{cat}"
-                if col in comp_df.columns:
-                    numeric = comp_df[comp_df[col] != "—"].copy()
-                    if not numeric.empty:
-                        numeric[col] = pd.to_numeric(numeric[col], errors="coerce")
-                        best = numeric.loc[numeric[col].idxmax()]
-                        leader_rows.append({
-                            "categoría": cat,
-                            "equipo líder": best["equipo"],
-                            "score": best[col],
-                        })
-            if leader_rows:
-                st.dataframe(pd.DataFrame(leader_rows), use_container_width=True, hide_index=True)
+        # Merge — suffix (B) when same team name in both
+        merged: Dict[str, Dict] = {}
+        for t in teams_a:
+            if t in data_a:
+                merged[t] = data_a[t]
+        for t in teams_b:
+            if t in data_b:
+                key = f"{t} [B]" if t in merged else t
+                merged[key] = data_b[t]
 
+        if merged:
+            render_comparison(merged)
         else:
-            st.warning("No hay datos para comparar.")
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# TAB 4 — Resultados guardados (shareable via ?run=<run_id>)
-# ─────────────────────────────────────────────────────────────────────────────
-
-with tab_saved:
-    st.markdown(
-        "Cargá resultados de evaluaciones anteriores. "
-        "Compartí un resultado pegando `?run=<run_id>` al final de la URL."
-    )
-
-    saved_runs = list_saved_runs()
-
-    # ── Auto-load from URL query param ───────────────────────────────────────
-    qp = st.query_params
-    url_run_id = qp.get("run", None)
-
-    # ── Run selector ─────────────────────────────────────────────────────────
-    if not saved_runs:
-        st.info(f"No hay resultados guardados en `{RESULTS_DIR}/`. Evaluá equipos en la pestaña Submissions.")
-    else:
-        run_options = {r["run_id"]: r for r in saved_runs}
-        run_ids = list(run_options.keys())
-
-        default_idx = 0
-        if url_run_id and url_run_id in run_ids:
-            default_idx = run_ids.index(url_run_id)
-
-        selected_run_id = st.selectbox(
-            "Seleccioná un run guardado:",
-            options=run_ids,
-            index=default_idx,
-            format_func=lambda rid: (
-                f"{rid}  —  equipos: {', '.join(run_options[rid]['teams'])}"
-                f"  ({run_options[rid]['saved_at'][:19].replace('T', ' ')})"
-            ),
-        )
-
-        # Keep URL in sync so the current selection is always shareable
-        st.query_params["run"] = selected_run_id
-
-        run_meta = run_options[selected_run_id]
-        run_file = RESULTS_DIR / f"{selected_run_id}.json"
-        st.caption(
-            f"Guardado: {run_meta['saved_at'][:19].replace('T', ' ')}  ·  "
-            f"Equipos: {', '.join(run_meta['teams'])}  ·  "
-            f"Archivo: `{run_file.name}`"
-        )
-
-        col_share, col_dl = st.columns([3, 1])
-        col_share.info(f"Enlace shareable: agrega `?run={selected_run_id}` a la URL del navegador.")
-
-        # Download raw JSON
-        raw_json = run_file.read_text(encoding="utf-8")
-        col_dl.download_button(
-            label="⬇️ Descargar JSON",
-            data=raw_json,
-            file_name=run_file.name,
-            mime="application/json",
-        )
-
-        st.markdown("---")
-
-        # ── Load and render ───────────────────────────────────────────────────
-        saved_sub_results = load_run(selected_run_id)
-
-        if saved_sub_results is None:
-            st.error(f"No se pudo cargar el run `{selected_run_id}`.")
-        else:
-            # ── Comparison table ──────────────────────────────────────────────
-            st.subheader("🏆 Ranking")
-            comp_df = build_comparison_df(saved_sub_results)
-            if not comp_df.empty:
-                st.dataframe(comp_df, use_container_width=True, hide_index=True)
-
-                chart_df = comp_df[["equipo", "score_promedio"]].copy().set_index("equipo")
-                st.bar_chart(chart_df)
-
-                cat_cols = [c for c in comp_df.columns if c.startswith("score_")]
-                if cat_cols:
-                    cat_df = comp_df[["equipo"] + cat_cols].copy()
-                    cat_df.columns = ["equipo"] + [c.replace("score_", "") for c in cat_cols]
-                    st.subheader("🗂️ Scores por categoría")
-                    st.dataframe(cat_df, use_container_width=True, hide_index=True)
-
-            st.markdown("---")
-
-            # ── Per-team detail ───────────────────────────────────────────────
-            st.subheader("📊 Detalle por equipo")
-            team_tabs = st.tabs([f"📊 {t}" for t in saved_sub_results.keys()])
-            for team_tab, (team_name, payload) in zip(team_tabs, saved_sub_results.items()):
-                with team_tab:
-                    if payload.get("error"):
-                        st.error(f"Error durante evaluación: {payload['error']}")
-                    else:
-                        render_results(payload, team_label=team_name)
+            st.info("Selecciona al menos 1 equipo de cada run.")

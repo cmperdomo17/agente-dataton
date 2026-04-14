@@ -26,3 +26,6 @@ Thumbs.db
 
 # Politicas
 politicas/
+results/
+submissions/*.zip
+.claude/

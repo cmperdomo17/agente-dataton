@@ -2,7 +2,34 @@
   "permissions": {
     "allow": [
       "Bash(python3 -c ':*)",
-      "Bash(ls -t /Users/valentinagomez/Desktop/Strata/agente-dataton/results/*.json)"
+      "Bash(ls -t /Users/valentinagomez/Desktop/Strata/agente-dataton/results/*.json)",
+      "Bash(python3)",
+      "Read(//private/var/folders/gz/8_cl9rrj3c9b_j93_81k54440000gn/T/omni_eval_zwwemwqi/**)",
+      "Read(//var/folders/gz/8_cl9rrj3c9b_j93_81k54440000gn/T/omni_eval_zwwemwqi/Catalina_Torres_Arenas/strata-challenge-agent/core/**)",
+      "Read(//private/var/folders/gz/8_cl9rrj3c9b_j93_81k54440000gn/T/omni_eval_zwwemwqi/Catalina_Torres_Arenas/strata-challenge-agent/core/**)",
+      "Read(//var/folders/gz/8_cl9rrj3c9b_j93_81k54440000gn/T/omni_eval_zwwemwqi/JULIAN_DAVID_MENESES_DAZA/core/**)",
+      "Read(//private/var/folders/gz/8_cl9rrj3c9b_j93_81k54440000gn/T/omni_eval_zwwemwqi/JULIAN_DAVID_MENESES_DAZA/core/**)",
+      "Read(//var/folders/gz/8_cl9rrj3c9b_j93_81k54440000gn/T/omni_eval_zwwemwqi/JuanFe/JuanFe_Strata/core/**)",
+      "Read(//private/var/folders/gz/8_cl9rrj3c9b_j93_81k54440000gn/T/omni_eval_zwwemwqi/JuanFe/JuanFe_Strata/core/**)",
+      "Read(//var/folders/gz/8_cl9rrj3c9b_j93_81k54440000gn/T/omni_eval_zwwemwqi/jorge_andres_erazo/core/**)",
+      "Read(//private/var/folders/gz/8_cl9rrj3c9b_j93_81k54440000gn/T/omni_eval_zwwemwqi/jorge_andres_erazo/core/**)",
+      "Read(//var/folders/gz/8_cl9rrj3c9b_j93_81k54440000gn/T/omni_eval_zwwemwqi/juan_david_vela/agente-strata/core/**)",
+      "Read(//private/var/folders/gz/8_cl9rrj3c9b_j93_81k54440000gn/T/omni_eval_zwwemwqi/juan_david_vela/agente-strata/core/**)",
+      "Read(//var/folders/gz/8_cl9rrj3c9b_j93_81k54440000gn/T/omni_eval_zwwemwqi/Catalina_Torres_Arenas/**)",
+      "Read(//private/var/folders/gz/8_cl9rrj3c9b_j93_81k54440000gn/T/omni_eval_zwwemwqi/Catalina_Torres_Arenas/**)",
+      "Read(//var/folders/gz/8_cl9rrj3c9b_j93_81k54440000gn/T/omni_eval_zwwemwqi/JULIAN_DAVID_MENESES_DAZA/**)",
+      "Read(//private/var/folders/gz/8_cl9rrj3c9b_j93_81k54440000gn/T/omni_eval_zwwemwqi/JULIAN_DAVID_MENESES_DAZA/**)",
+      "Read(//var/folders/gz/8_cl9rrj3c9b_j93_81k54440000gn/T/omni_eval_zwwemwqi/JuanFe/**)",
+      "Read(//private/var/folders/gz/8_cl9rrj3c9b_j93_81k54440000gn/T/omni_eval_zwwemwqi/JuanFe/**)",
+      "Read(//var/folders/gz/8_cl9rrj3c9b_j93_81k54440000gn/T/omni_eval_zwwemwqi/jorge_andres_erazo/**)",
+      "Read(//private/var/folders/gz/8_cl9rrj3c9b_j93_81k54440000gn/T/omni_eval_zwwemwqi/jorge_andres_erazo/**)",
+      "Read(//var/folders/gz/8_cl9rrj3c9b_j93_81k54440000gn/T/omni_eval_zwwemwqi/juan_david_vela/**)",
+      "Read(//private/var/folders/gz/8_cl9rrj3c9b_j93_81k54440000gn/T/omni_eval_zwwemwqi/juan_david_vela/**)",
+      "Bash(python3 -m json.tool)",
+      "Read(//private/var/folders/gz/8_cl9rrj3c9b_j93_81k54440000gn/T/**)",
+      "Bash(grep -E '\\\\.\\(json|csv\\)$')",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('app_evaluator.py'\\).read\\(\\)\\); print\\('syntax OK'\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('submission_loader.py'\\).read\\(\\)\\); print\\('syntax OK'\\)\")"
     ]
   }
 }
