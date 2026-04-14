@@ -301,13 +301,30 @@ def _purge_team_modules(incoming_root: Path):
 
     modules_to_remove = []
     for mod_name, mod in list(sys.modules.items()):
-        if not (mod_name == "core" or mod_name.startswith("core.")):
-            continue
-        # Si el módulo tiene __file__ y es de otro path → purgar
+        # Always purge core.* and core namespace modules from other teams
+        is_core_ns = mod_name == "core" or mod_name.startswith("core.")
+
+        # Also purge ANY flat/non-core module (e.g. 'session_context', 'agent',
+        # 'challenge') whose __file__ lives inside an omni_eval temp directory
+        # that does NOT belong to the incoming team.
+        # Some teams use bare imports (`from session_context import ...`) or
+        # self-referential package imports (`from challenge.core import ...`).
+        # Without this, a cached module from team A is served to team B.
         mod_file = getattr(mod, "__file__", None) or ""
-        if mod_file and incoming_core not in mod_file:
+        is_flat_from_other_team = (
+            not is_core_ns
+            and mod_file
+            and "omni_eval" in mod_file
+            and str(incoming_root) not in mod_file
+        )
+
+        if not (is_core_ns or is_flat_from_other_team):
+            continue
+
+        if is_flat_from_other_team:
             modules_to_remove.append(mod_name)
-        # Si no tiene __file__ (módulo built o namespace) → purgar igual
+        elif mod_file and incoming_core not in mod_file:
+            modules_to_remove.append(mod_name)
         elif not mod_file:
             modules_to_remove.append(mod_name)
 
@@ -320,17 +337,37 @@ def _purge_team_modules(incoming_root: Path):
 
 def _inject_path_permanently(root_dir: Path):
     """
-    Agrega el root del equipo a sys.path[0].
+    Agrega el root del equipo a sys.path[0] y core/ a sys.path[1].
 
     Se inserta al frente para que los imports de 'core.*' del equipo
     tengan prioridad sobre cualquier 'core.*' de otro equipo que
     haya quedado en un path más profundo.
+
+    También inyecta root_dir/core para soportar equipos que usan imports
+    sin prefijo de paquete: `from session_context import ...` en vez de
+    `from core.session_context import ...`.
     """
     root_str = str(root_dir)
-    # Remover si ya estaba (podría estar en posición no-0)
-    if root_str in sys.path:
-        sys.path.remove(root_str)
-    # Insertar al frente
+    core_str = str(root_dir / "core")
+
+    # Purgar paths de core/ de equipos anteriores (dentro de directorios temporales)
+    stale_core = [
+        p for p in sys.path
+        if p.endswith("/core") and "omni_eval" in p and p != core_str
+    ]
+    for p in stale_core:
+        try:
+            sys.path.remove(p)
+        except ValueError:
+            pass
+
+    # Remover si ya estaban en posición incorrecta
+    for p in [core_str, root_str]:
+        if p in sys.path:
+            sys.path.remove(p)
+
+    # Insertar al frente: root primero, luego core/
+    sys.path.insert(0, core_str)
     sys.path.insert(0, root_str)
 
 
@@ -339,10 +376,25 @@ def _dynamic_import_create_agent(root_dir: Path, team_name: str) -> Callable:
     Importa create_agent dinámicamente desde core/agent.py del equipo.
     El root del equipo ya debe estar en sys.path[0].
     """
+    import re
     import types
 
     agent_path = root_dir / "core" / "agent.py"
     module_name = f"team_{team_name}_core_agent"
+
+    # Some teams use self-referential package imports:
+    #   `from challenge.core import session_context`
+    # where root_dir.name == "challenge". In that case, root_dir.parent
+    # must be in sys.path so Python can resolve the top-level package.
+    try:
+        agent_source = agent_path.read_text(encoding="utf-8", errors="replace")
+        pkg = re.escape(root_dir.name)
+        if re.search(rf'(?:from|import)\s+{pkg}\b', agent_source):
+            parent_str = str(root_dir.parent)
+            if parent_str not in sys.path:
+                sys.path.insert(1, parent_str)
+    except Exception:
+        pass
 
     # Explicitly register the team's core/ as the canonical 'core' package.
     # This must happen after _purge_team_modules has cleared stale core.* entries.
