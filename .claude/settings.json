@@ -29,7 +29,8 @@
       "Read(//private/var/folders/gz/8_cl9rrj3c9b_j93_81k54440000gn/T/**)",
       "Bash(grep -E '\\\\.\\(json|csv\\)$')",
       "Bash(python -c \"import ast; ast.parse\\(open\\('app_evaluator.py'\\).read\\(\\)\\); print\\('syntax OK'\\)\")",
-      "Bash(python -c \"import ast; ast.parse\\(open\\('submission_loader.py'\\).read\\(\\)\\); print\\('syntax OK'\\)\")"
+      "Bash(python -c \"import ast; ast.parse\\(open\\('submission_loader.py'\\).read\\(\\)\\); print\\('syntax OK'\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('submission_loader.py'\\).read\\(\\)\\); print\\('OK'\\)\")"
     ]
   }
 }
