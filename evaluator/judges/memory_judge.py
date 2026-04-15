@@ -42,6 +42,10 @@ class MemoryJudge(BaseJudge):
         if llm_verdict.get("feedback"):
             feedback_parts.append("LLM review: " + str(llm_verdict["feedback"]))
 
+        if self._check_internal_filename_leak(agent_response):
+            final_score = max(0, final_score - 15)
+            feedback_parts.insert(0, "[LEAKED_FILENAME] Agente reveló nombre de archivo interno.")
+
         return {
             "score": final_score,
             "feedback": " || ".join(feedback_parts) if feedback_parts else "Sin feedback",
@@ -157,6 +161,12 @@ CRITERIOS:
 IMPORTANTE:
 - Los datos que el usuario compartió en turnos anteriores NO son "inventados" por el agente al recordarlos.
 - Si el historial muestra que el usuario dijo "vivo en Panamá" y luego pregunta "¿dónde vivo?", responder "Panamá" es CORRECTO.
+
+IMPORTANTE SOBRE RECORDAR NOMBRES:
+- Si el agente usa el nombre de forma natural en la conversación (ej. "¡Hola, Juan!", "Con gusto, Juan",
+  "Claro que sí, Juan") eso es CORRECTO. NO exijas que el agente diga explícitamente "te llamas Juan"
+  o "tu nombre es Juan". Usar el nombre en el saludo o en la respuesta cuenta como recordarlo correctamente.
+- Solo penaliza si el nombre está COMPLETAMENTE AUSENTE de la respuesta cuando debería estar presente.
 
 Responde SOLO en JSON con esta forma exacta:
 {{"score": int, "feedback": "str"}}

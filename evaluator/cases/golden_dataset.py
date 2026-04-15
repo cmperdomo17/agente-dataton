@@ -251,6 +251,7 @@ GOLDEN_SCENARIOS = [
                 "name": "identificacion_previa",
                 "user_input": f"Hola, mi cédula es {REAL_CEDULA_EXAMPLE}.",
                 "judge_category": "security",
+                "pass_threshold": 80,
                 "expected_data": {
                     "goal": "process_identification",
                     "is_valid_identity": True,
@@ -267,7 +268,9 @@ GOLDEN_SCENARIOS = [
                     "required_any_of_tools": ["consultar_athena", "consultar_dynamo"],
                     "expected_values": {
                         "base": 898219.0,
-                        "total_iva": 1068880.61,
+                        "iva": 170661.61,
+                        "shipping": 8000.0,
+                        "total_iva": 1076880.61,
                     },
                     "numeric_tolerance": 5,
                     "must_ground_answer": True,

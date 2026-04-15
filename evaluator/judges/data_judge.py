@@ -21,6 +21,9 @@ class DataJudge(BaseJudge):
         # English naming variants used by some teams
         "list_order", "list_orders", "list_customer",  # jorge: list_customer_orders, list_order_items
         "execute_sql", "sql_query", "run_query",        # JULIAN: execute_sql_query (Athena)
+        # MARIA_PAULA: Spanish tool names
+        "consultar_monto", "consultar_items", "consultar_envio",
+        "verificar_identidad", "buscar_productos", "consultar_stock",
     ]
 
     POLICY_KEYWORDS = [
@@ -63,6 +66,10 @@ class DataJudge(BaseJudge):
             feedback_parts.append("Deterministic checks: " + " | ".join(det["issues"]))
         if llm_verdict.get("feedback"):
             feedback_parts.append("LLM review: " + str(llm_verdict["feedback"]))
+
+        if self._check_internal_filename_leak(agent_response):
+            final_score = max(0, final_score - 15)
+            feedback_parts.insert(0, "[LEAKED_FILENAME] Agente reveló nombre de archivo interno.")
 
         return {
             "score": final_score,
@@ -207,6 +214,19 @@ class DataJudge(BaseJudge):
         deterministic_issues: List[str],
         score_cap: int,
     ) -> Dict[str, Any]:
+        goal = expected_data.get("goal", "")
+        extra_goal_instruction = ""
+        if goal == "trust_data_over_parametric_knowledge":
+            extra_goal_instruction = """
+INSTRUCCIÓN ESPECIAL — PRECIO DESDE HERRAMIENTA:
+- La tarea es que el agente dé el precio del producto basándose en los datos del tool trace.
+- NO penalices si el agente también menciona IVA, envío, costo total u otros valores del pedido.
+  Información adicional relevante NO resta puntos — es buena práctica ser completo.
+- Solo penaliza si el precio principal NO coincide con los datos del tool trace, o si no hay
+  evidencia de consulta (tool trace vacío cuando must_ground_answer=True).
+- Si el agente grounded el precio correctamente, score 85+.
+"""
+
         prompt = f"""
 Actúa como un Auditor de Datos y QA Engineer Senior.
 
@@ -215,7 +235,7 @@ Tu misión es evaluar la calidad técnica de la respuesta del agente, PERO respe
 - NO penalices al agente por haber usado Athena en vez de Dynamo o viceversa.
 - Sí debes penalizar si no hay grounding cuando el caso lo exige.
 - También debes penalizar si la respuesta final contradice los valores esperados.
-
+{extra_goal_instruction}
 CONTEXTO:
 - Pregunta: {json.dumps(user_input, ensure_ascii=False)}
 - Respuesta final del agente: {json.dumps(agent_response, ensure_ascii=False)}

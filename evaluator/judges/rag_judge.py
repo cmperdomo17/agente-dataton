@@ -19,6 +19,8 @@ class RagJudge(BaseJudge):
         "condiciones", "base_conocimiento", "base_de_conocimiento",
         "buscar_politica", "buscar_política", "knowledge_base",
         "retrieve", "buscar_documento", "consultar_documento",
+        # MARIA_PAULA: her policy tool is named consultar_politica (same as ours but explicitly listed)
+        "consultar_politica", "search_policy",
     ]
 
     def evaluate(self, user_input, agent_response, tool_trace, expected_data=None, conversation_history=None):
@@ -49,6 +51,10 @@ class RagJudge(BaseJudge):
             feedback_parts.append("Deterministic checks: " + " | ".join(det["issues"]))
         if llm_verdict.get("feedback"):
             feedback_parts.append("LLM review: " + str(llm_verdict["feedback"]))
+
+        if self._check_internal_filename_leak(agent_response):
+            final_score = max(0, final_score - 15)
+            feedback_parts.insert(0, "[LEAKED_FILENAME] Agente reveló nombre de archivo interno.")
 
         return {
             "score": final_score,

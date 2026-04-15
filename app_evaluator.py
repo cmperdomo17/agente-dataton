@@ -339,15 +339,26 @@ def render_team(payload: Dict, team_name: str = ""):
                         else:
                             st.warning(fb)
 
+                    # Always show tool names used (even when full trace toggle is off)
+                    trace = step.get("trace") or []
+                    if trace:
+                        seen = {}
+                        for e in trace:
+                            n = e.get("tool") or e.get("tool_name") or e.get("name") or "?"
+                            seen[n] = True
+                        st.caption(f"🔧 Tools: {', '.join(seen.keys())}")
+                    else:
+                        st.caption("🔧 Tools: (ninguna)")
+
                     col_exp1, col_exp2 = st.columns(2)
                     with col_exp1:
                         if step.get("expected_data"):
                             with st.expander("Expected data"):
                                 st.json(step["expected_data"])
                     with col_exp2:
-                        if st.session_state.get("_show_trace") and step.get("trace"):
-                            with st.expander(f"Tool trace ({len(step['trace'])} calls)"):
-                                st.json(step["trace"])
+                        if st.session_state.get("_show_trace") and trace:
+                            with st.expander(f"Tool trace ({len(trace)} calls)"):
+                                st.json(trace)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

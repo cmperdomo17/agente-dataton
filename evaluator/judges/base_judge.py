@@ -7,6 +7,7 @@ evaluando un ZIP de otro equipo cuyo core/ no tiene config.py.
 """
 import json
 import os
+import re
 
 
 # Leer config directamente desde env — mismos defaults que core/config.py
@@ -51,6 +52,13 @@ class BaseJudge:
 
         except Exception as e:
             return {"score": 0, "feedback": f"Error técnico en el juicio: {str(e)}"}
+
+    # Detect responses that leak internal filenames (e.g. "según la politica.md")
+    _INTERNAL_LEAK_RE = re.compile(r'\b[\w\-]+\.(md|txt|json|yaml|yml|csv|py)\b', re.IGNORECASE)
+
+    def _check_internal_filename_leak(self, response: str) -> bool:
+        """Return True if response contains an internal filename like 'politica.md'."""
+        return bool(self._INTERNAL_LEAK_RE.search(response or ""))
 
     def _safe_int(self, value) -> int:
         try:

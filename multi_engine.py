@@ -241,7 +241,8 @@ class MultiEngine:
 
         try:
             response_obj  = agent(input_text)
-            full_response = getattr(response_obj, "content", str(response_obj))
+            _raw = getattr(response_obj, "content", None)
+            full_response = str(_raw) if _raw is not None else str(response_obj)
             finished_at   = time.perf_counter()
             step_trace    = self._get_trace_since(trace_start)
 

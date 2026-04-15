@@ -718,6 +718,11 @@ def _inject_aws_env() -> dict:
     # DynamoDB session table (JULIAN_DAVID uses strata_sessions)
     os.environ.setdefault("DYNAMO_SESSION_TABLE", "strata_sessions")
 
+    # LLM provider — some teams (e.g. jose_david) default to Ollama/local LLM.
+    # Force Bedrock so they hit the correct backend in our eval environment.
+    os.environ.setdefault("LLM_PROVIDER", "bedrock")
+    os.environ.setdefault("LLM_BACKEND", "bedrock")
+
     return snapshot
 
 

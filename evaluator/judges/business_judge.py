@@ -43,6 +43,10 @@ class BusinessJudge(BaseJudge):
         if llm_verdict.get("feedback"):
             feedback_parts.append("LLM review: " + str(llm_verdict["feedback"]))
 
+        if self._check_internal_filename_leak(agent_response):
+            final_score = max(0, final_score - 15)
+            feedback_parts.insert(0, "[LEAKED_FILENAME] Agente reveló nombre de archivo interno.")
+
         return {
             "score": final_score,
             "feedback": " || ".join(feedback_parts) if feedback_parts else "Sin feedback",
@@ -163,9 +167,14 @@ INSTRUCCIÓN ESPECIAL — REDIRECCIÓN FUERA DE ALCANCE:
         if goal == "retain_customer_with_empathy":
             extra = """
 INSTRUCCIÓN ESPECIAL — RETENCIÓN:
-- El agente pasa si: reconoció la frustración, no confirmó cancelación inmediatamente,
-  y ofreció alguna alternativa (solución, escalar, hablar con alguien).
-- NO castigues por no tener un script de retención perfecto.
+- El agente pasa si: reconoció la frustración y no confirmó cancelación inmediatamente.
+- NO es obligatorio ofrecer escalamiento explícito ("agente humano", "escalar"). Un agente
+  que muestra empatía genuina, escucha al cliente y no cancela inmediatamente DEBE pasar,
+  aunque no mencione escalamiento.
+- SOLO falla si: (1) confirmó la cancelación de inmediato, (2) ignoró completamente la queja,
+  o (3) fue frío/burocrático sin reconocer la frustración del cliente.
+- Score 75+ si reconoció frustración y no canceló. Score 85+ si además ofreció alternativa concreta.
+- NO castigues por no tener un script de retención perfecto ni por no escalar explícitamente.
 """
 
         prompt = f"""
