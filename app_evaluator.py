@@ -35,7 +35,11 @@ def save_run(teams: Dict[str, Any]) -> tuple:
         "teams": teams,
     }
     path = RESULTS_DIR / f"{run_id}.json"
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    def _default(o):
+        if hasattr(o, "isoformat"):
+            return o.isoformat()
+        return str(o)
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, default=_default), encoding="utf-8")
     return path, run_id
 
 
@@ -599,6 +603,8 @@ with tab_eval:
                             create_agent_fn=sub.create_agent,
                             team_name=sub.team_name,
                             session_fns=sub._session_fns,  # team-specific trace fns
+                            backend_tag=sub.backend_tag,
+                            backend_notes=sub.backend_notes,
                         )
                         result = engine.run_all(
                             category_filter=eval_cats or None,

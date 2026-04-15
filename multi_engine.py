@@ -5,12 +5,35 @@ from typing import Any, Callable, Dict, List, Optional
 
 class MultiEngine:
 
+    # Error substrings that indicate a connectivity or model-compatibility failure.
+    _INFRA_ERROR_PATTERNS = (
+        # Connectivity failures (local model server not reachable)
+        "connecterror", "connection error", "connection refused",
+        "cannot connect", "connection timed out", "remotedisconnected",
+        "httpsconnectionpool", "connectionpool",
+        "name or service not known", "nodename nor servname",
+        # Bedrock Converse API protocol errors caused by non-Claude model incompatibilities
+        # (e.g. Llama3 via Strands doesn't format conversation/tool turns correctly)
+        "conversation blocks and tool result blocks",
+        "cannot be provided in the same turn",
+        "content field in the message object",
+        "add a contentblock",
+        # Athena infrastructure mismatches (wrong output bucket, missing DB/tables)
+        "unable to verify/create output bucket",
+        "start_query_execution",  # boto3 method call in step feedback
+        "startqueryexecution",    # AWS SDK error message operation name
+        "database not found",
+        "glue catalog",
+    )
+
     def __init__(
         self,
         create_agent_fn: Callable,
         pass_threshold: int = 80,
         team_name: str = "unknown",
         session_fns: Optional[Dict[str, Callable]] = None,
+        backend_tag: str = "unknown",
+        backend_notes: str = "",
     ):
         # Imports diferidos de jueces — evita cargar boto3 al arrancar Streamlit
         from evaluator.judges.security_judge import SecurityJudge
@@ -22,6 +45,9 @@ class MultiEngine:
         self.create_agent_fn = create_agent_fn
         self.pass_threshold = pass_threshold
         self.team_name = team_name
+        self.backend_tag = backend_tag
+        self.backend_notes = backend_notes
+        self.is_nonstandard_backend = backend_tag not in ("bedrock", "unknown")
         self.judges = {
             "security": SecurityJudge(),
             "business": BusinessJudge(),
@@ -106,6 +132,8 @@ class MultiEngine:
 
         return {
             "team_name": self.team_name,
+            "backend_tag": self.backend_tag,
+            "backend_notes": self.backend_notes,
             "summary": self._build_summary(scenario_results),
             "scenario_results": scenario_results,
         }
@@ -121,6 +149,8 @@ class MultiEngine:
         try:
             agent = self.create_agent_fn(streaming=False)
         except Exception as e:
+            err_str = str(e)
+            infra = self.is_nonstandard_backend and self._is_infra_error(err_str)
             return {
                 "id": scenario["id"],
                 "name": scenario["name"],
@@ -129,9 +159,12 @@ class MultiEngine:
                 "hard_gate": scenario.get("hard_gate", False),
                 "reset_policy": reset_policy,
                 "pass_threshold": scenario.get("pass_threshold", self.pass_threshold),
-                "passed": False, "status": "error", "scenario_score": 0,
+                "passed": False,
+                "status": "infra_mismatch" if infra else "error",
+                "scenario_score": 0,
                 "steps_run": 0, "step_results": [], "scenario_trace": [],
                 "error": f"No se pudo instanciar el agente: {e}",
+                "infra_mismatch": infra,
             }
 
         try:
@@ -160,8 +193,18 @@ class MultiEngine:
         scenario_score  = self._compute_scenario_score(step_results)
         scenario_passed = self._scenario_passed(scenario, step_results, scenario_error, scenario_score)
 
+        # A scenario is infra_mismatch if ALL step errors look like connectivity failures
+        # and the team uses a non-standard (local) backend.
+        infra_mismatch = (
+            self.is_nonstandard_backend
+            and bool(step_results or scenario_error)
+            and self._all_infra_errors(step_results, scenario_error)
+        )
+
         status = "ok"
-        if scenario_error:
+        if infra_mismatch:
+            status = "infra_mismatch"
+        elif scenario_error:
             status = "error"
         elif scenario.get("hard_gate") and not scenario_passed:
             status = "failed_hard_gate"
@@ -178,6 +221,7 @@ class MultiEngine:
             "pass_threshold": scenario.get("pass_threshold", self.pass_threshold),
             "passed": scenario_passed,
             "status": status,
+            "infra_mismatch": infra_mismatch,
             "scenario_score": scenario_score,
             "steps_run": len(step_results),
             "step_results": step_results,
@@ -301,11 +345,28 @@ class MultiEngine:
             return False
         return scenario_score >= scenario.get("pass_threshold", self.pass_threshold)
 
+    def _is_infra_error(self, error_str: str) -> bool:
+        low = error_str.lower()
+        return any(pat in low for pat in self._INFRA_ERROR_PATTERNS)
+
+    def _all_infra_errors(self, step_results, scenario_error) -> bool:
+        """True when every available error signal looks like a connectivity failure."""
+        signals = []
+        if scenario_error:
+            signals.append(scenario_error)
+        for s in step_results:
+            if s.get("status") == "error":
+                signals.append(s.get("feedback", "") + s.get("response", ""))
+        if not signals:
+            return False
+        return all(self._is_infra_error(sig) for sig in signals)
+
     def _build_summary(self, scenario_results):
         total  = len(scenario_results)
         passed = sum(1 for s in scenario_results if s["passed"])
         total_steps = sum(s["steps_run"] for s in scenario_results)
         hard_gate_failed = [s["id"] for s in scenario_results if s.get("hard_gate") and not s.get("passed")]
+        infra_mismatch_count = sum(1 for s in scenario_results if s.get("infra_mismatch"))
 
         level_breakdown = {}
         for s in scenario_results:
@@ -335,6 +396,7 @@ class MultiEngine:
             "total_steps": total_steps,
             "hard_gate_failed_ids": hard_gate_failed,
             "disqualified": len(hard_gate_failed) > 0,
+            "infra_mismatch_count": infra_mismatch_count,
             "level_breakdown": level_breakdown,
             "category_breakdown": category_breakdown,
         }

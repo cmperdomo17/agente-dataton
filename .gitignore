@@ -28,4 +28,5 @@ Thumbs.db
 politicas/
 results/
 submissions/*.zip
+submissions/.eval_cache/
 .claude/

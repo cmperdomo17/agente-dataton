@@ -10,6 +10,84 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, List, Optional
 
+# ─────────────────────────────────────────────────────────────────────────────
+# DynamoDB table-name redirect
+# Some teams hardcode Retail* table names.  We transparently redirect those to
+# our existing omniretail_* tables so they never need to create anything.
+# Installed once at module-import time via _install_dynamo_name_redirect().
+# ─────────────────────────────────────────────────────────────────────────────
+
+_DYNAMO_TABLE_REDIRECT = {
+    "retailcustomers":   "omniretail_customers",
+    "retailorders":      "omniretail_orders",
+    "retailorderitems":  "omniretail_order_items",
+    "retailproducts":    "omniretail_products",
+    "retailstock":       "omniretail_stock",
+    "retailshipments":   "omniretail_shipments",
+}
+
+
+class _DynamoResourceProxy:
+    """
+    Wraps a boto3 DynamoDB ServiceResource.  Any access to a Retail* table name
+    is silently redirected to the corresponding omniretail_* table.
+    create_table() for a Retail* name is a no-op — returns the existing table.
+    """
+    __slots__ = ("_real", "_map")
+
+    def __init__(self, real_resource, table_map):
+        object.__setattr__(self, "_real", real_resource)
+        object.__setattr__(self, "_map",  table_map)
+
+    def _resolve(self, name: str) -> str:
+        return object.__getattribute__(self, "_map").get(name.lower(), name)
+
+    def Table(self, name: str):
+        resolved = self._resolve(name)
+        return object.__getattribute__(self, "_real").Table(resolved)
+
+    def create_table(self, **kwargs):
+        name = kwargs.get("TableName", "")
+        resolved = self._resolve(name)
+        real = object.__getattribute__(self, "_real")
+        if resolved != name:
+            print(f"  [loader] DynamoDB redirect: create_table({name!r}) → Table({resolved!r}) [no-op]")
+            return real.Table(resolved)
+        return real.create_table(**kwargs)
+
+    def __getattr__(self, item):
+        return getattr(object.__getattribute__(self, "_real"), item)
+
+    def __setattr__(self, key, value):
+        setattr(object.__getattribute__(self, "_real"), key, value)
+
+
+def _install_dynamo_name_redirect():
+    """Patch boto3.resource so DynamoDB resources get the Retail→omniretail redirect."""
+    try:
+        import boto3
+        import boto3.session as _boto3_session
+
+        _map = _DYNAMO_TABLE_REDIRECT
+        _orig_fn  = boto3.resource
+        _orig_ses = _boto3_session.Session.resource
+
+        def _wrap(service_name, *args, **kwargs):
+            real = _orig_fn(service_name, *args, **kwargs)
+            return _DynamoResourceProxy(real, _map) if service_name == "dynamodb" else real
+
+        def _wrap_session(self, service_name, *args, **kwargs):
+            real = _orig_ses(self, service_name, *args, **kwargs)
+            return _DynamoResourceProxy(real, _map) if service_name == "dynamodb" else real
+
+        boto3.resource = _wrap
+        _boto3_session.Session.resource = _wrap_session
+    except Exception as exc:  # pragma: no cover
+        print(f"  [loader] WARNING: DynamoDB redirect patch failed: {exc}")
+
+
+_install_dynamo_name_redirect()
+
 _TRACE_FN_NAMES = ("reset_session", "get_tool_trace", "get_tool_trace_length", "get_tool_trace_since")
 
 
@@ -22,11 +100,18 @@ def _capture_team_session_fns():
     that the team agent writes to.  Returns None if the module lacks the
     standard trace API (engine falls back to its own resolution).
 
-    Supports two patterns:
+    Supports three patterns:
       Pattern 1 — module-level functions (most teams).
       Pattern 2 — class-based singleton via SessionContext (e.g. JULIAN).
+      Flat fallback — teams that import `from session_context import ...` instead of
+        `from core.session_context import ...` set sys.modules['session_context'],
+        not 'core.session_context' (e.g. Alvaro).
     """
     sc = sys.modules.get("core.session_context")
+    if sc is None:
+        # Fallback: teams that use flat imports (`from session_context import ...`)
+        # never set sys.modules['core.session_context'] — they set the bare name instead.
+        sc = sys.modules.get("session_context")
     if sc is None:
         return None
 
@@ -79,9 +164,29 @@ class SubmissionInfo:
     _core_mod: Any = field(default=None, repr=False)  # team's core module snapshot
     load_error: Optional[str] = None
 
+    # Backend detection — set by _detect_backend() at load time.
+    # Possible values: "bedrock" | "bedrock-nonstandard" | "ollama" | "openai" | "anthropic-direct" | "local-csv" | "unknown"
+    backend_tag: str = "unknown"
+    # Human-readable note explaining the detection (e.g. "OllamaModel on localhost:11434")
+    backend_notes: str = ""
+
+    # README content extracted from submission (empty if none found)
+    readme_content: str = ""
+    # pip install log (from cache or fresh install); empty if no requirements.txt
+    install_log: str = ""
+
     @property
     def ready(self) -> bool:
         return self.contract_passed and self._create_agent_fn is not None and self.load_error is None
+
+    @property
+    def is_nonstandard_backend(self) -> bool:
+        """True when the team uses a backend not available in the eval environment."""
+        return self.backend_tag not in ("bedrock", "unknown")
+
+    @property
+    def uses_athena(self) -> bool:
+        return "athena" in self.backend_tag
 
     def create_agent(self, streaming: bool = False) -> Any:
         if not self.ready:
@@ -100,7 +205,9 @@ class SubmissionInfo:
             for c in self.contract_checks
         )
         status = "LISTO" if self.ready else f"ERROR: {self.load_error or 'contrato incompleto'}"
-        return f"[{self.team_name}] {status} | {checks}"
+        backend = f"[{self.backend_tag}]" if self.backend_tag != "unknown" else ""
+        suffix = f" ⚠ backend no estándar: {self.backend_notes}" if self.is_nonstandard_backend else ""
+        return f"[{self.team_name}]{backend} {status} | {checks}{suffix}"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -110,8 +217,12 @@ class SubmissionInfo:
 class SubmissionLoader:
     def __init__(self, submissions_dir: str, work_dir: Optional[str] = None):
         self.submissions_dir = Path(submissions_dir)
-        self.work_dir = Path(work_dir) if work_dir else Path(tempfile.mkdtemp(prefix="omni_eval_"))
+        # Use a fixed (stable) temp dir so repeated Streamlit reloads reuse the same
+        # directory instead of accumulating ~2GB dirs that fill the disk.
+        self.work_dir = Path(work_dir) if work_dir else Path(tempfile.gettempdir()) / "omni_eval_stable"
         self.work_dir.mkdir(parents=True, exist_ok=True)
+        self.cache_dir = self.submissions_dir / ".eval_cache"
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
 
     def load_all(self) -> List[SubmissionInfo]:
         zips = sorted(self.submissions_dir.glob("*.zip"))
@@ -152,6 +263,16 @@ class SubmissionLoader:
             sub.contract_checks.append(ContractCheck("core/agent.py presente", False, "archivo no encontrado"))
             return sub
         sub.root_dir = str(root_dir)
+        sub.backend_tag, sub.backend_notes = _detect_backend(root_dir)
+
+        # README + requirements (cached per ZIP mtime)
+        sub.readme_content = _read_readme(root_dir, team_name, zip_path, self.cache_dir)
+        sub.install_log = _install_requirements(root_dir, team_name, zip_path, self.cache_dir)
+
+        # Inject CSV data files for teams that load pandas DataFrames from disk
+        csv_dir = _export_dynamo_to_csv(self.cache_dir)
+        _setup_athena_if_needed(csv_dir)  # idempotent — creates Glue DB once
+        _inject_data_files(root_dir, csv_dir)
 
         # Step 3: validate contract
         sub.contract_checks = _validate_contract(root_dir)
@@ -265,6 +386,74 @@ def _validate_contract(root_dir: Path) -> List[ContractCheck]:
     return checks
 
 
+def _detect_backend(root_dir: Path) -> tuple:
+    """
+    Scan core/agent.py (and requirements.txt if present) to guess the LLM/data backend.
+
+    Returns (tag, notes) where tag is one of:
+      "bedrock"          — AWS Bedrock (standard, expected)
+      "ollama"           — local Ollama server
+      "openai"           — OpenAI API
+      "anthropic-direct" — Anthropic API directly (not via Bedrock)
+      "local-csv"        — local CSV/pandas data, no cloud DB
+      "unknown"          — cannot determine
+
+    Teams using non-standard backends will fail in the eval environment because
+    their model endpoint (Ollama, OpenAI key, etc.) is not available here.
+    This tag is purely informational — it does NOT change scoring.
+    """
+    import re
+
+    sources = []
+    agent_path = root_dir / "core" / "agent.py"
+    if agent_path.exists():
+        sources.append(agent_path.read_text(encoding="utf-8", errors="replace"))
+
+    # Also scan requirements.txt if present (anywhere in the root)
+    for req_path in (root_dir / "requirements.txt", root_dir.parent / "requirements.txt"):
+        if req_path.exists():
+            sources.append(req_path.read_text(encoding="utf-8", errors="replace"))
+
+    combined = "\n".join(sources).lower()
+
+    # Ollama — local server, always fails in eval env
+    if "ollama" in combined:
+        host_match = re.search(r'host\s*[=:]\s*["\']([^"\']+)["\']', combined)
+        host = host_match.group(1) if host_match else "localhost:11434"
+        return ("ollama", f"OllamaModel en {host}")
+
+    # OpenAI
+    if "openai" in combined:
+        return ("openai", "openai SDK detectado")
+
+    # Anthropic direct (but NOT via Bedrock wrapper)
+    if re.search(r'\banthropicbedrock\b|\bbedrockruntime\b|bedrock[-_]runtime|anthropic\.bedrock', combined):
+        pass  # falls through to bedrock check below
+    elif re.search(r'\bfrom anthropic\b|\bimport anthropic\b', combined):
+        return ("anthropic-direct", "Anthropic SDK directo (no Bedrock)")
+
+    # Bedrock — standard (Claude) vs non-standard (Llama, Mistral, Titan, etc.)
+    if "bedrock" in combined or "bedrockruntime" in combined or "bedrock-runtime" in combined:
+        # Detect non-Claude model identifiers anywhere in source/requirements
+        _non_claude = ["meta.llama", "llama3", "llama-3", "mistral", "amazon.titan",
+                       "cohere", "ai21", "jamba", "amazon.nova"]
+        for marker in _non_claude:
+            if marker in combined:
+                return ("bedrock-nonstandard", f"Bedrock con modelo no-Claude: {marker}")
+        # Bedrock + Athena: LLM is standard but data backend requires our Athena setup
+        if "athena" in combined and ("start_query_execution" in combined or "athena_db" in combined or "athena_output" in combined):
+            return ("bedrock+athena", "Bedrock Claude + Athena como base de datos")
+        return ("bedrock", "")
+
+    # Local CSV / pandas without any cloud DB
+    uses_local_data = "pandas" in combined or "read_csv" in combined or ".csv" in combined
+    uses_cloud_db = any(kw in combined for kw in ("dynamodb", "athena", "boto3", "dynamo"))
+    if uses_local_data and not uses_cloud_db:
+        return ("local-csv", "datos locales (CSV/pandas), sin DynamoDB/Athena")
+
+    return ("unknown", "")
+
+
 def _ensure_session_context(root_dir: Path):
     """Copy our session_context.py into the team's core/ if they don't have one."""
     target = root_dir / "core" / "session_context.py"
@@ -371,6 +560,357 @@ def _inject_path_permanently(root_dir: Path):
     sys.path.insert(0, root_str)
 
 
+def _get_zip_mtime(zip_path: Path) -> str:
+    """Return ZIP file modification time as a string (cache key)."""
+    try:
+        return str(zip_path.stat().st_mtime)
+    except Exception:
+        return "0"
+
+
+def _read_readme(root_dir: Path, team_name: str, zip_path: Path, cache_dir: Path) -> str:
+    """
+    Find and return README content from the team's submission.
+    Results are cached in cache_dir/{team_name}/readme.md, keyed by ZIP mtime.
+    Returns "" if no README found.
+    """
+    team_cache = cache_dir / team_name
+    team_cache.mkdir(parents=True, exist_ok=True)
+    mtime_file = team_cache / "zip_mtime"
+    readme_cache = team_cache / "readme.md"
+
+    current_mtime = _get_zip_mtime(zip_path)
+
+    # Return from cache if ZIP hasn't changed
+    if mtime_file.exists() and readme_cache.exists():
+        if mtime_file.read_text().strip() == current_mtime:
+            return readme_cache.read_text(encoding="utf-8", errors="replace")
+
+    # Search for README-like files (breadth-first, stop at first match)
+    readme_names = {"readme.md", "readme.txt", "instrucciones.md", "setup.md", "readme.rst"}
+    found_content = ""
+    for candidate in sorted(root_dir.rglob("*")):
+        if candidate.is_file() and candidate.name.lower() in readme_names:
+            raw = candidate.read_text(encoding="utf-8", errors="replace")
+            found_content = raw[:3000]
+            break
+
+    # Write cache (only mtime file if no README, to avoid re-scanning next run)
+    mtime_file.write_text(current_mtime)
+    readme_cache.write_text(found_content, encoding="utf-8")
+    return found_content
+
+
+def _install_requirements(root_dir: Path, team_name: str, zip_path: Path, cache_dir: Path) -> str:
+    """
+    Find requirements.txt in the team's submission and pip-install it.
+    Skips install if the ZIP mtime matches the cached mtime (already installed).
+    Returns pip output log string, or "" if no requirements.txt.
+    """
+    import subprocess
+
+    team_cache = cache_dir / team_name
+    team_cache.mkdir(parents=True, exist_ok=True)
+    mtime_file = team_cache / "zip_mtime"
+    install_log_file = team_cache / "install.log"
+
+    current_mtime = _get_zip_mtime(zip_path)
+
+    # Return from cache if ZIP hasn't changed and install already ran
+    if mtime_file.exists() and install_log_file.exists():
+        if mtime_file.read_text().strip() == current_mtime:
+            return install_log_file.read_text(encoding="utf-8", errors="replace")
+
+    # Find requirements.txt
+    req_path = None
+    for candidate in sorted(root_dir.rglob("requirements*.txt")):
+        req_path = candidate
+        break
+    if req_path is None:
+        # No requirements.txt — write cache so we don't re-scan
+        mtime_file.write_text(current_mtime)
+        install_log_file.write_text("")
+        return ""
+
+    print(f"  [loader] Installing requirements from {req_path.relative_to(root_dir)} …")
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "pip", "install", "-q",
+             "--no-warn-script-location", "-r", str(req_path)],
+            capture_output=True, text=True, timeout=120,
+        )
+        log = (result.stdout + result.stderr).strip()
+        status = "OK" if result.returncode == 0 else f"exit={result.returncode}"
+        full_log = f"[{status}] {req_path.name}\n{log}"
+    except subprocess.TimeoutExpired:
+        full_log = "[TIMEOUT] pip install exceeded 120s"
+    except Exception as e:
+        full_log = f"[ERROR] pip install failed: {e}"
+
+    # Write cache
+    mtime_file.write_text(current_mtime)
+    install_log_file.write_text(full_log, encoding="utf-8")
+    print(f"  [loader] Install done: {full_log.splitlines()[0]}")
+    return full_log
+
+
+def _inject_aws_env() -> dict:
+    """
+    Pre-inject our AWS credentials and infrastructure config into os.environ
+    BEFORE loading the team's module.  python-dotenv's load_dotenv() (without
+    override=True) respects existing env vars, so our values will be preserved
+    even when a team's .env has blank or wrong AWS keys.
+
+    Also injects standard DynamoDB table-name env vars pointing to our Retail*
+    tables, using setdefault so a team can still override them if they wish.
+
+    Returns a snapshot of our current AWS creds (used by _post_clean_aws_env).
+    """
+    _AWS_CRED_KEYS = [
+        "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN",
+        "AWS_DEFAULT_REGION", "AWS_REGION", "AWS_PROFILE",
+    ]
+    snapshot = {}
+    for key in _AWS_CRED_KEYS:
+        val = os.environ.get(key)
+        if val:
+            snapshot[key] = val
+            os.environ[key] = val  # explicit re-set (prevents accidental unset)
+
+    # Ensure region has a default so boto3 clients created at module level work.
+    os.environ.setdefault("AWS_DEFAULT_REGION", "us-east-2")
+    os.environ.setdefault("AWS_REGION", "us-east-2")
+
+    # Our DynamoDB tables use omniretail_* naming.  Inject all common table-name env
+    # var patterns so any team that reads table names from the environment will
+    # automatically point at our data — without overriding a team's explicit choice.
+    _DYNAMO_DEFAULTS = {
+        # Prefix pattern (teams using f"{prefix}customers" etc.)
+        "DYNAMO_PREFIX":            "omniretail_",
+        "DYNAMODB_TABLE_PREFIX":    "omniretail_",
+        # Explicit per-table pattern (e.g. juan_david_vela's aws_client.py)
+        "DYNAMO_TABLE_CUSTOMERS":   "omniretail_customers",
+        "DYNAMO_TABLE_ORDERS":      "omniretail_orders",
+        "DYNAMO_TABLE_ORDER_ITEMS": "omniretail_order_items",
+        "DYNAMO_TABLE_PRODUCTS":    "omniretail_products",
+        "DYNAMO_TABLE_STOCK":       "omniretail_stock",
+        "DYNAMO_TABLE_SHIPMENTS":   "omniretail_shipments",
+    }
+    for key, val in _DYNAMO_DEFAULTS.items():
+        os.environ.setdefault(key, val)
+
+    # Athena defaults — dataton-db already exists in the correct account.
+    _ATHENA_BUCKET = "dataton-challenge-unicauca"
+    os.environ.setdefault("ATHENA_OUTPUT",    f"s3://{_ATHENA_BUCKET}/athena-results/")
+    os.environ.setdefault("ATHENA_S3_OUTPUT", f"s3://{_ATHENA_BUCKET}/athena-results/")
+    os.environ.setdefault("ATHENA_WORKGROUP", "primary")
+    # dataton-db has a hyphen which is invalid in Athena SQL without quoting.
+    # _setup_athena_if_needed() creates dataton_db (underscore) as an alias.
+    os.environ.setdefault("ATHENA_DB",       "dataton_db")
+    os.environ.setdefault("ATHENA_DATABASE", "dataton_db")
+
+    # Policy S3 — policies live in dataton-challenge-unicauca/dataton-policies/
+    os.environ.setdefault("POLICIES_S3_BUCKET", _ATHENA_BUCKET)
+    os.environ.setdefault("POLICIES_S3_PREFIX", "dataton-policies/")
+    os.environ.setdefault("POLICY_S3_BUCKET",   _ATHENA_BUCKET)
+    os.environ.setdefault("POLICY_S3_PREFIX",   "dataton-policies/")
+
+    # DynamoDB session table (JULIAN_DAVID uses strata_sessions)
+    os.environ.setdefault("DYNAMO_SESSION_TABLE", "strata_sessions")
+
+    return snapshot
+
+
+def _post_clean_aws_env(snapshot: dict):
+    """
+    After team module loads (and their load_dotenv() may have run), remove any
+    empty-string AWS credential vars the student's .env may have introduced.
+    Empty strings cause boto3 to use them explicitly instead of falling back to
+    the credential chain (SSO profile, instance metadata, etc.).
+    """
+    _CRITICAL = ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN"]
+    for key in _CRITICAL:
+        if os.environ.get(key, None) == "":
+            os.environ.pop(key, None)
+        elif key in snapshot and snapshot[key]:
+            os.environ[key] = snapshot[key]  # restore our good value if wiped
+
+
+def _export_dynamo_to_csv(cache_dir: Path) -> Path:
+    """
+    Export all Retail* DynamoDB tables to CSV files in cache_dir/dynamo_csv/.
+    Returns the directory path.  Files are only re-exported if missing or stale
+    (checked by presence of a sentinel file).
+
+    Missing / non-existent tables get an empty placeholder CSV so pandas.read_csv
+    succeeds and returns an empty DataFrame.
+    """
+    import csv as _csv
+
+    csv_dir = cache_dir / "dynamo_csv"
+    sentinel = csv_dir / ".exported"
+    if sentinel.exists():
+        return csv_dir
+
+    csv_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        import boto3
+        region = os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
+        dynamo = boto3.resource("dynamodb", region_name=region)
+
+        _TABLES = [
+            ("omniretail_customers",       "customers"),
+            ("omniretail_orders",          "orders"),
+            ("omniretail_order_items",     "order_items"),
+            ("omniretail_products",        "products"),
+            ("omniretail_stock",           "stock"),
+            ("omniretail_shipments",       "shipments"),
+            ("omniretail_addresses",       "addresses"),
+            ("omniretail_brands",          "brands"),
+            ("omniretail_cards",           "cards"),
+            ("omniretail_categories",      "categories"),
+            ("omniretail_customer_emails", "customer_emails"),
+            ("omniretail_promotions",      "promotions"),
+            ("omniretail_tracking",        "tracking"),
+        ]
+
+        for ddb_name, csv_stem in _TABLES:
+            dest = csv_dir / f"{csv_stem}.csv"
+            try:
+                table = dynamo.Table(ddb_name)
+                items = []
+                kwargs: dict = {}
+                while True:
+                    resp = table.scan(**kwargs)
+                    items.extend(resp.get("Items", []))
+                    last = resp.get("LastEvaluatedKey")
+                    if not last:
+                        break
+                    kwargs["ExclusiveStartKey"] = last
+
+                if items:
+                    all_keys = list(dict.fromkeys(k for item in items for k in item))
+                    with open(dest, "w", newline="", encoding="utf-8") as f:
+                        writer = _csv.DictWriter(f, fieldnames=all_keys, extrasaction="ignore")
+                        writer.writeheader()
+                        for item in items:
+                            writer.writerow({k: item.get(k, "") for k in all_keys})
+                    print(f"  [loader] Exported {ddb_name} → {csv_stem}.csv ({len(items)} rows)")
+                else:
+                    # Empty table — write header-only CSV
+                    dest.write_text("id\n", encoding="utf-8")
+            except Exception as e:
+                print(f"  [loader] WARNING: could not export {ddb_name}: {e}")
+                dest.write_text("id\n", encoding="utf-8")
+
+        sentinel.touch()
+    except Exception as e:
+        print(f"  [loader] WARNING: DynamoDB export failed — {e}")
+
+    return csv_dir
+
+
+def _setup_athena_if_needed(csv_dir: Path) -> str:
+    """
+    Create dataton_db (underscore) as a Glue alias for dataton-db (hyphen).
+    Athena/Presto SQL cannot parse a hyphen in an unquoted identifier, so student
+    queries like `SELECT ... FROM dataton-db.customers` fail with a parse error.
+    This copies all table definitions from dataton-db → dataton_db once (sentinel-gated).
+    Returns the alias DB name.
+    """
+    _SOURCE_DB = "dataton-db"
+    _ALIAS_DB  = "dataton_db"
+
+    sentinel = csv_dir / ".athena_alias_ready"
+    if sentinel.exists():
+        os.environ.setdefault("ATHENA_DB",       _ALIAS_DB)
+        os.environ.setdefault("ATHENA_DATABASE", _ALIAS_DB)
+        return _ALIAS_DB
+
+    try:
+        import boto3 as _boto3
+        region = os.environ.get("AWS_DEFAULT_REGION", "us-east-2")
+        glue   = _boto3.client("glue", region_name=region)
+
+        # Create alias database
+        try:
+            glue.create_database(DatabaseInput={"Name": _ALIAS_DB})
+            print(f"  [loader] Created Glue alias DB: {_ALIAS_DB}")
+        except glue.exceptions.AlreadyExistsException:
+            print(f"  [loader] Glue alias DB already exists: {_ALIAS_DB}")
+
+        # Copy table definitions from dataton-db → dataton_db
+        paginator = glue.get_paginator("get_tables")
+        copied = 0
+        for page in paginator.paginate(DatabaseName=_SOURCE_DB):
+            for table in page["TableList"]:
+                table_input = {
+                    "Name": table["Name"],
+                    "StorageDescriptor": table["StorageDescriptor"],
+                    "TableType": table.get("TableType", "EXTERNAL_TABLE"),
+                    "Parameters": table.get("Parameters", {}),
+                }
+                try:
+                    glue.create_table(DatabaseName=_ALIAS_DB, TableInput=table_input)
+                    copied += 1
+                except glue.exceptions.AlreadyExistsException:
+                    pass
+
+        print(f"  [loader] Alias DB '{_ALIAS_DB}' ready ({copied} tables copied from {_SOURCE_DB})")
+        sentinel.touch()
+    except Exception as e:
+        print(f"  [loader] WARNING: Athena alias setup failed — {e}")
+        _ALIAS_DB = _SOURCE_DB  # fall back to hyphenated name
+
+    os.environ.setdefault("ATHENA_DB",       _ALIAS_DB)
+    os.environ.setdefault("ATHENA_DATABASE", _ALIAS_DB)
+    return _ALIAS_DB
+
+
+def _inject_data_files(root_dir: Path, csv_dir: Path):
+    """
+    Copy our exported CSV files into the team's data directory so CSV-loading
+    agents (those that do `pd.read_csv('data/customers.csv')`) can run.
+
+    Supports two patterns:
+      - root_dir/data/*.csv           (MARIA_PAULA pattern)
+      - root_dir/data/datasets/*.csv  (valentina_balcazar pattern)
+
+    Only copies if the team's data dir exists (created during extraction) OR
+    if the team's source code references .csv files (we create the directory).
+    """
+    import shutil as _shutil
+
+    if not csv_dir.exists():
+        return
+
+    # Detect if team uses CSV data (check source code)
+    agent_path = root_dir / "core" / "agent.py"
+    team_sources = list(root_dir.rglob("*.py"))
+    combined = ""
+    for p in team_sources[:20]:
+        try:
+            combined += p.read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+    if ".csv" not in combined and "read_csv" not in combined:
+        return  # Team doesn't use CSV — skip
+
+    # Candidate data directories
+    data_dirs = [
+        root_dir / "data",
+        root_dir / "data" / "datasets",
+    ]
+    for data_dir in data_dirs:
+        data_dir.mkdir(parents=True, exist_ok=True)
+        for csv_src in csv_dir.glob("*.csv"):
+            dest = data_dir / csv_src.name
+            if not dest.exists():
+                _shutil.copy2(csv_src, dest)
+
+    print(f"  [loader] Injected CSV data files into {root_dir.name}/data/")
+
+
 def _dynamic_import_create_agent(root_dir: Path, team_name: str) -> Callable:
     """
     Importa create_agent dinámicamente desde core/agent.py del equipo.
@@ -414,7 +954,14 @@ def _dynamic_import_create_agent(root_dir: Path, team_name: str) -> Callable:
     module = importlib.util.module_from_spec(spec)
     module.__package__ = "core"
     sys.modules[module_name] = module
+
+    # Pre-inject our AWS credentials BEFORE exec_module so that team's load_dotenv()
+    # (which by default doesn't override existing env vars) keeps our values.
+    aws_snapshot = _inject_aws_env()
     spec.loader.exec_module(module)
+    # Post-clean: remove any empty-string AWS vars a student's .env may have set,
+    # which would cause boto3 to fail instead of falling back to the credential chain.
+    _post_clean_aws_env(aws_snapshot)
 
     if not hasattr(module, "create_agent"):
         raise AttributeError("create_agent no encontrado en el módulo cargado")

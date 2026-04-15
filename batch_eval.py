@@ -44,6 +44,29 @@ def run_all(submissions_dir: str, output_dir: str, category_filter=None, level_f
 
     for sub in submissions:
         print(f"── Evaluating: {sub.team_name} ──────────────────────────────")
+
+        # Backend info (always shown)
+        backend_label = f"[{sub.backend_tag}]" if sub.backend_tag != "unknown" else "[unknown backend]"
+        backend_note  = f" — {sub.backend_notes}" if sub.backend_notes else ""
+        print(f"  Backend: {backend_label}{backend_note}")
+
+        # README from submission (if any)
+        if sub.readme_content:
+            preview = sub.readme_content[:800]
+            if len(sub.readme_content) > 800:
+                preview += "\n  … (truncated)"
+            print(f"  README:\n{'─'*60}")
+            for line in preview.splitlines():
+                print(f"    {line}")
+            print(f"{'─'*60}")
+
+        # Install log summary (last 5 lines)
+        if sub.install_log:
+            log_lines = sub.install_log.strip().splitlines()
+            print(f"  Install log ({len(log_lines)} lines):")
+            for line in log_lines[-5:]:
+                print(f"    {line}")
+
         if not sub.ready:
             print(f"  SKIP — {sub.load_error}\n")
             summary_rows.append({
@@ -63,6 +86,8 @@ def run_all(submissions_dir: str, output_dir: str, category_filter=None, level_f
             create_agent_fn=sub.create_agent,
             team_name=sub.team_name,
             session_fns=sub._session_fns,
+            backend_tag=sub.backend_tag,
+            backend_notes=sub.backend_notes,
         )
 
         t0 = time.perf_counter()
@@ -91,8 +116,12 @@ def run_all(submissions_dir: str, output_dir: str, category_filter=None, level_f
         summary = result["summary"]
 
         # ── Print quick summary ──────────────────────────────────────────
-        print(f"  Done in {elapsed}s")
+        backend_label = f"  [{sub.backend_tag}]" if sub.backend_tag != "unknown" else ""
+        infra_note = f"  ⚠ {sub.backend_notes}" if sub.is_nonstandard_backend and sub.backend_notes else ""
+        print(f"  Done in {elapsed}s{backend_label}{infra_note}")
         print(f"  Pass rate : {summary['pass_rate']}%  ({summary['passed_scenarios']}/{summary['total_scenarios']} scenarios)")
+        if summary.get("infra_mismatch_count"):
+            print(f"  ⚠ {summary['infra_mismatch_count']} scenario(s) marcados como infra_mismatch (backend local no disponible)")
         if summary.get("disqualified"):
             print(f"  DISQUALIFIED — hard gate(s) failed: {summary['hard_gate_failed_ids']}")
         print(f"  Category breakdown:")
@@ -104,18 +133,22 @@ def run_all(submissions_dir: str, output_dir: str, category_filter=None, level_f
         result["run_id"] = run_id
         result["elapsed_s"] = elapsed
         json_path = out / f"{sub.team_name}_{run_id}.json"
-        json_path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+        _default = lambda o: o.isoformat() if hasattr(o, "isoformat") else str(o)
+        json_path.write_text(json.dumps(result, ensure_ascii=False, indent=2, default=_default), encoding="utf-8")
         print(f"  Saved → {json_path}\n")
 
         # ── Collect summary row ──────────────────────────────────────────
         row = {
             "run_id": run_id,
             "team": sub.team_name,
+            "backend_tag": sub.backend_tag,
+            "backend_notes": sub.backend_notes,
             "status": "ok",
             "error": None,
             "pass_rate": summary["pass_rate"],
             "passed": summary["passed_scenarios"],
             "total": summary["total_scenarios"],
+            "infra_mismatch": summary.get("infra_mismatch_count", 0),
             "disqualified": summary.get("disqualified", False),
             "hard_gate_failed": ",".join(summary.get("hard_gate_failed_ids", [])),
             "elapsed_s": elapsed,

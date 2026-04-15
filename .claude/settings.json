@@ -30,7 +30,34 @@
       "Bash(grep -E '\\\\.\\(json|csv\\)$')",
       "Bash(python -c \"import ast; ast.parse\\(open\\('app_evaluator.py'\\).read\\(\\)\\); print\\('syntax OK'\\)\")",
       "Bash(python -c \"import ast; ast.parse\\(open\\('submission_loader.py'\\).read\\(\\)\\); print\\('syntax OK'\\)\")",
-      "Bash(python -c \"import ast; ast.parse\\(open\\('submission_loader.py'\\).read\\(\\)\\); print\\('OK'\\)\")"
+      "Bash(python -c \"import ast; ast.parse\\(open\\('submission_loader.py'\\).read\\(\\)\\); print\\('OK'\\)\")",
+      "Read(//private/tmp/**)",
+      "Bash(unzip -q /Users/valentinagomez/Desktop/Strata/agente-dataton/submissions/AlvaroArroyo.zip)",
+      "Bash(unzip -q /Users/valentinagomez/Desktop/Strata/agente-dataton/submissions/ZailynIdrobo.zip)",
+      "Bash(ls -la Zailyn*)",
+      "Bash(unzip -l /Users/valentinagomez/Desktop/Strata/agente-dataton/submissions/ZailynIdrobo.zip)",
+      "Bash(mkdir -p /tmp/alvaro_extract /tmp/zailyn_extract /tmp/juanfe_extract)",
+      "Read(//tmp/**)",
+      "Bash(unzip -q /Users/valentinagomez/Desktop/Strata/agente-dataton/submissions/\"Juan Fernando Martínez Ruiz.zip\")",
+      "Bash(rm -rf /tmp/juanfe_extract)",
+      "Bash(mkdir -p /tmp/juanfe_extract)",
+      "Bash(unzip -q /Users/valentinagomez/Desktop/Strata/agente-dataton/submissions/JuanFe.zip)",
+      "Bash(unzip -q \"/Users/valentinagomez/Desktop/Strata/agente-dataton/submissions/AlvaroArroyo.zip\")",
+      "Bash(find /tmp -name \"session_context.py\" -type f)",
+      "Bash(unzip -q -n \"/Users/valentinagomez/Desktop/Strata/agente-dataton/submissions/AlvaroArroyo.zip\")",
+      "Bash(rm -rf AlvaroArroyo)",
+      "Bash(unzip \"/Users/valentinagomez/Desktop/Strata/agente-dataton/submissions/AlvaroArroyo.zip\" -d /tmp)",
+      "Bash(python -c ':*)",
+      "Bash(python -c \"from core.session_context import get_session_customer, get_session_customer_id; print\\('get_session_customer\\(\\):', get_session_customer\\(\\)\\); print\\('get_session_customer_id\\(\\):', get_session_customer_id\\(\\)\\)\")",
+      "Bash(python -c ' *)",
+      "Bash(python3 -c ' *)",
+      "Read(//Users/valentinagomez/Desktop/Strata/**)",
+      "Bash(ls submissions/.eval_cache/dynamo_csv/.*)",
+      "Bash(rm -f submissions/.eval_cache/dynamo_csv/.exported)",
+      "Bash(rm -f submissions/.eval_cache/dynamo_csv/.athena_ready)"
+    ],
+    "additionalDirectories": [
+      "/var/folders/gz/8_cl9rrj3c9b_j93_81k54440000gn/T"
     ]
   }
 }

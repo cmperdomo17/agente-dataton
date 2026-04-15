@@ -64,6 +64,12 @@ def get_session_customer_name() -> Optional[str]:
         return _session_customer_name
 
 
+def get_session_customer() -> Optional[str]:
+    """Alias for get_session_customer_id() — backward-compat for teams that import this name."""
+    with _lock:
+        return _session_customer_id
+
+
 def clear_session_customer() -> None:
     global _session_customer_id, _session_customer_name
     with _lock:
