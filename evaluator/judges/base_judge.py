@@ -40,7 +40,11 @@ class BaseJudge:
             aws_region = (os.getenv("EVAL_JUDGE_REGION")
                           or os.getenv("AWS_REGION")
                           or _JUDGE_REGION_FALLBACK)
-            aws_profile = os.getenv("AWS_PROFILE", "")
+            # EVAL_JUDGE_PROFILE is locked at submission_loader import time (before
+            # AWS_PROFILE is overridden to Valen-Agentic for team DynamoDB calls).
+            # This ensures the judge always uses the Bedrock-capable account.
+            aws_profile = (os.getenv("EVAL_JUDGE_PROFILE")
+                           or os.getenv("AWS_PROFILE", ""))
 
             # Si hay credenciales estáticas en env, boto3 las usa directamente.
             # Si no, usa el perfil configurado.

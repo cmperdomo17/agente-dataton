@@ -14,11 +14,13 @@ from typing import Any, Callable, List, Optional
 _SHIM_MISSING = object()
 _active_restore_shims: Optional[Callable] = None
 
-# Lock judge model at import time — before ANY team .env can contaminate MODEL_ID.
-# _inject_aws_env() sets EVAL_JUDGE_MODEL_ID to this value on every team load,
-# preventing a prior team's load_dotenv() from poisoning the judge model.
-_LOCKED_JUDGE_MODEL  = os.getenv("MODEL_ID",   "us.anthropic.claude-sonnet-4-5-20250929-v1:0")
-_LOCKED_JUDGE_REGION = os.getenv("AWS_REGION", "us-east-2")
+# Lock judge credentials at import time — before ANY team .env or setdefault call
+# can contaminate MODEL_ID / AWS_PROFILE / AWS_REGION.
+# _inject_aws_env() restores these values on every team load so the judge always
+# uses the original shell credentials (which have Bedrock access).
+_LOCKED_JUDGE_MODEL   = os.getenv("MODEL_ID",   "us.anthropic.claude-sonnet-4-5-20250929-v1:0")
+_LOCKED_JUDGE_REGION  = os.getenv("AWS_REGION", "us-east-2")
+_LOCKED_JUDGE_PROFILE = os.getenv("AWS_PROFILE", "")  # e.g. "smartcatalog"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # DynamoDB table-name redirect
@@ -28,12 +30,28 @@ _LOCKED_JUDGE_REGION = os.getenv("AWS_REGION", "us-east-2")
 # ─────────────────────────────────────────────────────────────────────────────
 
 _DYNAMO_TABLE_REDIRECT = {
+    # Retail* names (juan_david_vela, load_dynamodb.py convention)
     "retailcustomers":   "omniretail_customers",
     "retailorders":      "omniretail_orders",
     "retailorderitems":  "omniretail_order_items",
     "retailproducts":    "omniretail_products",
     "retailstock":       "omniretail_stock",
     "retailshipments":   "omniretail_shipments",
+    # Bare names (daniel_ceron and others who use plain table names)
+    "customers":         "omniretail_customers",
+    "orders":            "omniretail_orders",
+    "order_items":       "omniretail_order_items",
+    "orderitems":        "omniretail_order_items",
+    "products":          "omniretail_products",
+    "stock":             "omniretail_stock",
+    "shipments":         "omniretail_shipments",
+    "customer_emails":   "omniretail_customer_emails",
+    "addresses":         "omniretail_addresses",
+    "brands":            "omniretail_brands",
+    "cards":             "omniretail_cards",
+    "categories":        "omniretail_categories",
+    "promotions":        "omniretail_promotions",
+    "tracking":          "omniretail_tracking",
 }
 
 
@@ -96,23 +114,50 @@ class _DynamoResourceProxy:
         setattr(object.__getattribute__(self, "_real"), key, value)
 
 
+_DYNAMO_ACCOUNT_PROFILE = "Valen-Agentic"   # account 469511944548 — holds all omniretail_* tables
+_DYNAMO_ACCOUNT_REGION  = "us-east-2"
+
+
 def _install_dynamo_name_redirect():
-    """Patch boto3.resource so DynamoDB resources get the Retail→omniretail redirect."""
+    """Patch boto3.resource so DynamoDB resources get the Retail→omniretail redirect.
+
+    Also forces all DynamoDB resources to use the Valen-Agentic AWS profile so that
+    team code always hits the correct account (469511944548) regardless of what
+    AWS_PROFILE is set to in the shell.  This keeps the judge's Bedrock calls on the
+    original shell credentials (which have Bedrock access) without a global profile swap.
+    """
     try:
         import boto3
         import boto3.session as _boto3_session
 
-        _map = _DYNAMO_TABLE_REDIRECT
+        _map     = _DYNAMO_TABLE_REDIRECT
+        _profile = _DYNAMO_ACCOUNT_PROFILE
+        _region  = _DYNAMO_ACCOUNT_REGION
         _orig_fn  = boto3.resource
         _orig_ses = _boto3_session.Session.resource
 
+        def _make_dynamo_resource(region_name):
+            """Create a DynamoDB resource pinned to the dataton account."""
+            try:
+                session = boto3.Session(profile_name=_profile)
+                return _orig_ses(session, "dynamodb", region_name=region_name)
+            except Exception:
+                # Profile not available (e.g. CI env) — fall back to default creds
+                return _orig_fn("dynamodb", region_name=region_name)
+
         def _wrap(service_name, *args, **kwargs):
-            real = _orig_fn(service_name, *args, **kwargs)
-            return _DynamoResourceProxy(real, _map) if service_name == "dynamodb" else real
+            if service_name != "dynamodb":
+                return _orig_fn(service_name, *args, **kwargs)
+            region_name = kwargs.get("region_name") or os.environ.get("AWS_DEFAULT_REGION", _region)
+            real = _make_dynamo_resource(region_name)
+            return _DynamoResourceProxy(real, _map)
 
         def _wrap_session(self, service_name, *args, **kwargs):
-            real = _orig_ses(self, service_name, *args, **kwargs)
-            return _DynamoResourceProxy(real, _map) if service_name == "dynamodb" else real
+            if service_name != "dynamodb":
+                return _orig_ses(self, service_name, *args, **kwargs)
+            region_name = kwargs.get("region_name") or os.environ.get("AWS_DEFAULT_REGION", _region)
+            real = _make_dynamo_resource(region_name)
+            return _DynamoResourceProxy(real, _map)
 
         boto3.resource = _wrap
         _boto3_session.Session.resource = _wrap_session
@@ -770,11 +815,12 @@ def _inject_aws_env() -> dict:
             snapshot[key] = val
             os.environ[key] = val  # explicit re-set (prevents accidental unset)
 
-    # Protect judge model from team .env contamination.
-    # Use values locked at module-import time (_LOCKED_JUDGE_MODEL / _LOCKED_JUDGE_REGION),
-    # captured before any team's load_dotenv() can contaminate MODEL_ID.
+    # Protect judge credentials from team .env contamination.
+    # Use values locked at module-import time, captured before any team's load_dotenv()
+    # or the Valen-Agentic setdefault below can change AWS_PROFILE / MODEL_ID.
     os.environ["EVAL_JUDGE_MODEL_ID"] = _LOCKED_JUDGE_MODEL
     os.environ["EVAL_JUDGE_REGION"]   = _LOCKED_JUDGE_REGION
+    os.environ["EVAL_JUDGE_PROFILE"]  = _LOCKED_JUDGE_PROFILE
 
     # Ensure region has a default so boto3 clients created at module level work.
     os.environ.setdefault("AWS_DEFAULT_REGION", "us-east-2")
@@ -1341,6 +1387,17 @@ def _install_llm_shims(backend_tag: str) -> Optional[Callable]:
     # ── Ollama backend ────────────────────────────────────────────────────────
     if backend_tag == "ollama":
         _shim_strands_class("ollama", "OllamaModel", _make_strands_bedrock_shim("OllamaModel"))
+        # Some teams (e.g. Harold) have PROVIDER="anthropic" hardcoded in config.py —
+        # env var injection can't override Python module constants.  Patch AnthropicModel
+        # and the anthropic SDK so their Anthropic path also routes through Bedrock.
+        _shim_strands_class("anthropic", "AnthropicModel", _make_strands_bedrock_shim("AnthropicModel"))
+        try:
+            import anthropic as _ant
+            _patch(_ant, "Anthropic", _make_anthropic_sdk_shim())
+            if hasattr(_ant, "AsyncAnthropic"):
+                _patch(_ant, "AsyncAnthropic", _make_anthropic_sdk_shim())
+        except ImportError:
+            pass
 
     # ── OpenAI / Groq backend ─────────────────────────────────────────────────
     if backend_tag == "openai":

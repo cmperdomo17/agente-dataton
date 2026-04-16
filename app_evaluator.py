@@ -616,6 +616,7 @@ with tab_eval:
                             session_fns=sub._session_fns,  # team-specific trace fns
                             backend_tag=sub.backend_tag,
                             backend_notes=sub.backend_notes,
+                            team_root_dir=sub.root_dir,
                         )
                         result = engine.run_all(
                             category_filter=eval_cats or None,

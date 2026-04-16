@@ -88,6 +88,7 @@ def run_all(submissions_dir: str, output_dir: str, category_filter=None, level_f
             session_fns=sub._session_fns,
             backend_tag=sub.backend_tag,
             backend_notes=sub.backend_notes,
+            team_root_dir=sub.root_dir,
         )
 
         t0 = time.perf_counter()

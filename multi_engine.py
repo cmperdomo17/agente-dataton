@@ -34,6 +34,7 @@ class MultiEngine:
         session_fns: Optional[Dict[str, Callable]] = None,
         backend_tag: str = "unknown",
         backend_notes: str = "",
+        team_root_dir: str = "",
     ):
         # Imports diferidos de jueces — evita cargar boto3 al arrancar Streamlit
         from evaluator.judges.security_judge import SecurityJudge
@@ -48,6 +49,7 @@ class MultiEngine:
         self.backend_tag = backend_tag
         self.backend_notes = backend_notes
         self.is_nonstandard_backend = backend_tag not in ("bedrock", "unknown")
+        self.team_root_dir = team_root_dir
         self.judges = {
             "security": SecurityJudge(),
             "business": BusinessJudge(),
@@ -145,6 +147,18 @@ class MultiEngine:
 
         if reset_policy == "per_scenario":
             self._reset_session()
+
+        # Purge stale core.* modules from previous teams before instantiating agent.
+        # Without this, team B's create_agent() finds team A's core.config in
+        # sys.modules and fails with ImportError on names unique to team A.
+        if self.team_root_dir:
+            try:
+                from pathlib import Path as _Path
+                from submission_loader import _purge_team_modules, _inject_path_permanently
+                _purge_team_modules(_Path(self.team_root_dir))
+                _inject_path_permanently(_Path(self.team_root_dir))
+            except Exception:
+                pass
 
         try:
             agent = self.create_agent_fn(streaming=False)
