@@ -91,7 +91,8 @@
       "Bash(unzip -p \"/Users/valentinagomez/Desktop/Strata/agente-dataton/submissions/MARIA_PAULA_BARRERA_MUÑOZ.zip\" \"omniretail_agent/core/tools/catalog_tool.py\")",
       "Bash(unzip -p \"/Users/valentinagomez/Desktop/Strata/agente-dataton/submissions/JuanFe.zip\" \"JuanFe_Strata/core/data_loader.py\")",
       "Bash(unzip -p \"/Users/valentinagomez/Desktop/Strata/agente-dataton/submissions/MARIA_PAULA_BARRERA_MUÑOZ.zip\" \"omniretail_agent/core/data/loader.py\")",
-      "Bash(unzip -p \"/Users/valentinagomez/Desktop/Strata/agente-dataton/submissions/jorge_andres_erazo.zip\" \"core/router.py\")"
+      "Bash(unzip -p \"/Users/valentinagomez/Desktop/Strata/agente-dataton/submissions/jorge_andres_erazo.zip\" \"core/router.py\")",
+      "Bash(python3 -c \"import json,sys; d=json.load\\(sys.stdin\\); [print\\(t['team'], '|', t.get\\('load_error',''\\), '|', t.get\\('eval_error',''\\), '| scenarios:', len\\(t.get\\('scenarios',[]\\)\\)\\) for t in d]\")"
     ],
     "additionalDirectories": [
       "/var/folders/gz/8_cl9rrj3c9b_j93_81k54440000gn/T",

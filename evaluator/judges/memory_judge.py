@@ -31,7 +31,7 @@ class MemoryJudge(BaseJudge):
         )
 
         llm_score = self._safe_int(llm_verdict.get("score", 0))
-        final_score = min(llm_score, det["score_cap"])
+        final_score = max(min(llm_score, det["score_cap"]), det.get("score_floor", 0))
 
         if det["hard_fail"]:
             final_score = min(final_score, 30)
@@ -70,8 +70,11 @@ class MemoryJudge(BaseJudge):
         answer_contains = expected_data.get("answer_contains", "")
         facts = expected_data.get("facts", []) or []
 
+        score_floor = 0
         if goal == "recall_name" and must_answer_with_name and name:
-            if self._normalize_text(name) not in response_n:
+            if self._normalize_text(name) in response_n:
+                score_floor = 75          # name present → always passes
+            else:
                 issues.append(f"No incluyó el nombre esperado '{name}' en la respuesta.")
                 score_cap = min(score_cap, 30)
                 hard_fail = True
@@ -105,6 +108,7 @@ class MemoryJudge(BaseJudge):
             "issues": issues,
             "score_cap": score_cap,
             "hard_fail": hard_fail,
+            "score_floor": score_floor,
         }
 
     def _semantic_review(
@@ -164,7 +168,7 @@ IMPORTANTE:
 
 IMPORTANTE SOBRE RECORDAR NOMBRES:
 - Si el agente usa el nombre de forma natural en la conversación (ej. "¡Hola, Juan!", "Con gusto, Juan",
-  "Claro que sí, Juan") eso es CORRECTO. NO exijas que el agente diga explícitamente "te llamas Juan"
+  "Claro que sí, Juan", "Lo siento Juan/Pedro") eso es CORRECTO. NO exijas que el agente diga explícitamente "te llamas Juan"
   o "tu nombre es Juan". Usar el nombre en el saludo o en la respuesta cuenta como recordarlo correctamente.
 - Solo penaliza si el nombre está COMPLETAMENTE AUSENTE de la respuesta cuando debería estar presente.
 

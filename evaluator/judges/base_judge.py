@@ -4,16 +4,22 @@ base_judge.py
 Lee MODEL_ID y AWS_REGION directamente desde variables de entorno,
 sin importar core.config. Esto evita que el juez falle cuando se está
 evaluando un ZIP de otro equipo cuyo core/ no tiene config.py.
+
+IMPORTANTE: _call_llm lee las variables de entorno en cada llamada (no al
+importar el módulo). Esto evita que el load_dotenv() de un equipo contamine
+el modelo del juez cuando los jueces se importan dentro de MultiEngine.__init__
+(que ocurre DESPUÉS de exec_module del equipo).
+El modelo del juez se lee desde EVAL_JUDGE_MODEL_ID primero, luego MODEL_ID.
+submission_loader._inject_aws_env() fuerza EVAL_JUDGE_MODEL_ID al modelo
+correcto antes de cargar cualquier ZIP.
 """
 import json
 import os
 import re
 
-
-# Leer config directamente desde env — mismos defaults que core/config.py
-_MODEL_ID   = os.getenv("MODEL_ID",   "us.anthropic.claude-sonnet-4-20250514-v1:0")
-_AWS_REGION = os.getenv("AWS_REGION", "us-east-2")
-_AWS_PROFILE = os.getenv("AWS_PROFILE", "")
+# Fallback por si EVAL_JUDGE_MODEL_ID no está definido y MODEL_ID tampoco
+_JUDGE_MODEL_FALLBACK = "us.anthropic.claude-sonnet-4-20250514-v1:0"
+_JUDGE_REGION_FALLBACK = "us-east-2"
 
 
 class BaseJudge:
@@ -24,14 +30,26 @@ class BaseJudge:
             return {"score": 0, "feedback": "Error: boto3 no instalado."}
 
         try:
+            # Leer en cada llamada para no quedar atrapado con valores contaminados
+            # por el load_dotenv() de algún equipo evaluado anteriormente.
+            # EVAL_JUDGE_MODEL_ID es forzado por submission_loader antes de cualquier
+            # carga de ZIP, por lo que tiene prioridad sobre MODEL_ID de equipos.
+            model_id  = (os.getenv("EVAL_JUDGE_MODEL_ID")
+                         or os.getenv("MODEL_ID")
+                         or _JUDGE_MODEL_FALLBACK)
+            aws_region = (os.getenv("EVAL_JUDGE_REGION")
+                          or os.getenv("AWS_REGION")
+                          or _JUDGE_REGION_FALLBACK)
+            aws_profile = os.getenv("AWS_PROFILE", "")
+
             # Si hay credenciales estáticas en env, boto3 las usa directamente.
             # Si no, usa el perfil configurado.
             session_kwargs = {}
-            if _AWS_PROFILE and not os.getenv("AWS_ACCESS_KEY_ID"):
-                session_kwargs["profile_name"] = _AWS_PROFILE
+            if aws_profile and not os.getenv("AWS_ACCESS_KEY_ID"):
+                session_kwargs["profile_name"] = aws_profile
 
             session = boto3.Session(**session_kwargs)
-            bedrock = session.client("bedrock-runtime", region_name=_AWS_REGION)
+            bedrock = session.client("bedrock-runtime", region_name=aws_region)
 
             body = json.dumps({
                 "anthropic_version": "bedrock-2023-05-31",
@@ -39,7 +57,7 @@ class BaseJudge:
                 "messages": [{"role": "user", "content": prompt}]
             })
 
-            response = bedrock.invoke_model(modelId=_MODEL_ID, body=body)
+            response = bedrock.invoke_model(modelId=model_id, body=body)
             res_body = json.loads(response.get("body").read())
             text_response = res_body["content"][0]["text"]
 

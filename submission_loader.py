@@ -27,6 +27,30 @@ _DYNAMO_TABLE_REDIRECT = {
 }
 
 
+class _TableProxy:
+    """
+    Wraps a boto3 DynamoDB Table object returned from a redirected create_table().
+    Makes wait_until_exists() a no-op (table already exists) and passes everything
+    else through to the real Table object.
+    """
+    __slots__ = ("_real",)
+
+    def __init__(self, real_table):
+        object.__setattr__(self, "_real", real_table)
+
+    def wait_until_exists(self, **kwargs):
+        print("  [loader] wait_until_exists skipped — table already active")
+
+    def wait_until_not_exists(self, **kwargs):
+        pass  # no-op for symmetry
+
+    def __getattr__(self, item):
+        return getattr(object.__getattribute__(self, "_real"), item)
+
+    def __setattr__(self, key, value):
+        setattr(object.__getattribute__(self, "_real"), key, value)
+
+
 class _DynamoResourceProxy:
     """
     Wraps a boto3 DynamoDB ServiceResource.  Any access to a Retail* table name
@@ -52,7 +76,7 @@ class _DynamoResourceProxy:
         real = object.__getattribute__(self, "_real")
         if resolved != name:
             print(f"  [loader] DynamoDB redirect: create_table({name!r}) → Table({resolved!r}) [no-op]")
-            return real.Table(resolved)
+            return _TableProxy(real.Table(resolved))
         return real.create_table(**kwargs)
 
     def __getattr__(self, item):
@@ -197,7 +221,11 @@ class SubmissionInfo:
         if self._core_mod is not None:
             sys.modules["core"] = self._core_mod
         _inject_path_permanently(Path(self.root_dir))
-        return self._create_agent_fn(streaming=streaming)
+        try:
+            return self._create_agent_fn(streaming=streaming)
+        except TypeError:
+            # Student's create_agent() doesn't accept streaming — call without it
+            return self._create_agent_fn()
 
     def summary(self) -> str:
         checks = ", ".join(
@@ -275,8 +303,9 @@ class SubmissionLoader:
         _inject_data_files(root_dir, csv_dir)
 
         # Step 3: validate contract
+        # Required: file present + create_agent defined. streaming is now optional.
         sub.contract_checks = _validate_contract(root_dir)
-        sub.contract_passed = all(c.passed for c in sub.contract_checks[:3])
+        sub.contract_passed = all(c.passed for c in sub.contract_checks[:2])
 
         if not sub.contract_passed:
             sub.load_error = "Contrato de integración incompleto."
@@ -457,19 +486,21 @@ def _detect_backend(root_dir: Path) -> tuple:
 def _ensure_session_context(root_dir: Path):
     """Copy our session_context.py into the team's core/ if they don't have one."""
     target = root_dir / "core" / "session_context.py"
-    if target.exists():
-        return
-    our_session_context = Path(__file__).parent / "core" / "session_context.py"
-    if our_session_context.exists():
-        shutil.copy(our_session_context, target)
+    if not target.exists():
+        our_session_context = Path(__file__).parent / "core" / "session_context.py"
+        if our_session_context.exists():
+            shutil.copy(our_session_context, target)
 
-    # Ensure core/__init__.py exists so Python treats it as a regular package.
-    # Without it, Python's import machinery may prefer our own core/ (which has
-    # __init__.py) over the team's core/ (namespace package), causing ImportError
-    # for modules that exist in the team's core/ but not in ours.
-    init_path = root_dir / "core" / "__init__.py"
-    if not init_path.exists():
-        init_path.touch()
+    # Ensure __init__.py exists in core/ and all other Python subdirectories.
+    # Regular packages (with __init__.py) take priority over namespace packages in
+    # sys.path, so this prevents a stale namespace package from a previous team's
+    # `tools/`, `utils/`, etc. shadowing this team's own package of the same name.
+    # NOTE: this loop must always run — do NOT guard it behind a session_context check,
+    # as teams that already have session_context.py (e.g. Samuel) still need
+    # __init__.py created in their tools/, utils/, etc. subdirectories.
+    for sub in [root_dir / "core"] + [d for d in root_dir.iterdir() if d.is_dir()]:
+        if any(sub.glob("*.py")) and not (sub / "__init__.py").exists():
+            (sub / "__init__.py").touch()
 
 
 def _purge_team_modules(incoming_root: Path):
@@ -500,11 +531,17 @@ def _purge_team_modules(incoming_root: Path):
         # self-referential package imports (`from challenge.core import ...`).
         # Without this, a cached module from team A is served to team B.
         mod_file = getattr(mod, "__file__", None) or ""
+        # For namespace packages (e.g. tools/, __file__ is None but __path__ exists)
+        mod_path_strs = [str(p) for p in (getattr(mod, "__path__", None) or [])]
         is_flat_from_other_team = (
             not is_core_ns
-            and mod_file
-            and "omni_eval" in mod_file
-            and str(incoming_root) not in mod_file
+            and (
+                (mod_file and "omni_eval" in mod_file and str(incoming_root) not in mod_file)
+                or any(
+                    "omni_eval" in p and str(incoming_root) not in p
+                    for p in mod_path_strs
+                )
+            )
         )
 
         if not (is_core_ns or is_flat_from_other_team):
@@ -676,6 +713,14 @@ def _inject_aws_env() -> dict:
         if val:
             snapshot[key] = val
             os.environ[key] = val  # explicit re-set (prevents accidental unset)
+
+    # Protect judge model from team .env contamination.
+    # EVAL_JUDGE_MODEL_ID and EVAL_JUDGE_REGION are read by base_judge._call_llm()
+    # on every invocation and are NEVER overridden by team load_dotenv() calls.
+    _JUDGE_MODEL  = "us.anthropic.claude-sonnet-4-20250514-v1:0"
+    _JUDGE_REGION = "us-east-2"
+    os.environ["EVAL_JUDGE_MODEL_ID"] = _JUDGE_MODEL
+    os.environ["EVAL_JUDGE_REGION"]   = _JUDGE_REGION
 
     # Ensure region has a default so boto3 clients created at module level work.
     os.environ.setdefault("AWS_DEFAULT_REGION", "us-east-2")
@@ -963,7 +1008,63 @@ def _dynamic_import_create_agent(root_dir: Path, team_name: str) -> Callable:
     # Pre-inject our AWS credentials BEFORE exec_module so that team's load_dotenv()
     # (which by default doesn't override existing env vars) keeps our values.
     aws_snapshot = _inject_aws_env()
-    spec.loader.exec_module(module)
+
+    import builtins
+    import threading
+    _load_exc: list = []
+
+    _base_dict = {k: v for k, v in module.__dict__.items()}
+
+    # Mock builtins.input to return "salir"/"exit" so modules with an interactive
+    # REPL loop at module level (e.g. `while True: input(...)`) don't block forever.
+    # The mock is installed for the duration of exec_module and then removed.
+    _real_input = builtins.input
+
+    def _stub_input(prompt=""):
+        print(f"  [loader] input() intercepted (prompt={str(prompt)[:60]!r}) → returning 'salir'")
+        return "salir"
+
+    def _do_exec():
+        # Retry loop: on NameError for an annotation-only type (e.g. `-> AgentResponse`)
+        # inject a stub class and retry.  Avoids needing `from __future__ import annotations`
+        # which breaks students who already have it in a non-first position.
+        _stubs: dict = {}
+        builtins.input = _stub_input
+        try:
+            for _attempt in range(8):
+                try:
+                    if _attempt > 0:
+                        module.__dict__.clear()
+                        module.__dict__.update(_base_dict)
+                        module.__dict__.update(_stubs)
+                    spec.loader.exec_module(module)
+                    return
+                except NameError as exc:
+                    import re as _re
+                    m = _re.search(r"name '(\w+)' is not defined", str(exc))
+                    if not m or m.group(1) in _stubs:
+                        _load_exc.append(exc)
+                        return
+                    stub_name = m.group(1)
+                    _stubs[stub_name] = type(stub_name, (), {})
+                    print(f"  [loader] Injected annotation stub for '{stub_name}'")
+                except Exception as exc:
+                    _load_exc.append(exc)
+                    return
+            _load_exc.append(RuntimeError("Demasiadas anotaciones de tipo sin definir"))
+        finally:
+            builtins.input = _real_input
+
+    _t = threading.Thread(target=_do_exec, daemon=True)
+    _t.start()
+    _t.join(timeout=90)  # 90 s max — some teams run DynamoDB data loading at startup
+    if _t.is_alive():
+        raise TimeoutError(
+            "El módulo tardó más de 90 s en cargar (posible bloqueo en inicialización de DynamoDB o red)"
+        )
+    if _load_exc:
+        raise _load_exc[0]
+
     # Post-clean: remove any empty-string AWS vars a student's .env may have set,
     # which would cause boto3 to fail instead of falling back to the credential chain.
     _post_clean_aws_env(aws_snapshot)

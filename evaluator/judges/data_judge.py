@@ -6,6 +6,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 
 class DataJudge(BaseJudge):
+    _PRIMARY_VALUE_KEYS = {"total_iva", "total", "total_con_iva"}
+
     DATA_BACKEND_GROUP = [
         # Known backends
         "athena", "dynamo",
@@ -190,12 +192,18 @@ class DataJudge(BaseJudge):
 
         response_numbers = self._extract_numbers(agent_response)
 
-        # We prioritize total_iva if present because it is often the final answer.
+        # When a primary key (total_iva, total) is present, only check that — components are bonus.
+        primary_keys = self._PRIMARY_VALUE_KEYS & set(expected_values.keys())
+        has_primary = bool(primary_keys)
+
         for key, expected in expected_values.items():
             try:
                 expected_num = float(expected)
             except Exception:
                 continue
+
+            if has_primary and key not in primary_keys:
+                continue  # base/iva/shipping are bonus, not required
 
             if not self._response_contains_value(response_numbers, expected_num, tolerance):
                 issues.append(f"El valor esperado para '{key}' ({expected}) no aparece correctamente en la respuesta.")
@@ -216,6 +224,17 @@ class DataJudge(BaseJudge):
     ) -> Dict[str, Any]:
         goal = expected_data.get("goal", "")
         extra_goal_instruction = ""
+        breakdown_instruction = ""
+
+        has_iva_breakdown = "total_iva" in (expected_data.get("expected_values") or {})
+        if has_iva_breakdown:
+            breakdown_instruction = """
+INSTRUCCIÓN ESPECIAL — DESGLOSE IVA:
+- El valor REQUERIDO es el total_iva. Si el agente respondió el total correcto: score mínimo 90.
+- Si además el agente desglosó los componentes (base, IVA, envío): score 95-100.
+- NO penalices si el agente NO mencionó el desglose — el total correcto es suficiente para pasar.
+"""
+
         if goal == "trust_data_over_parametric_knowledge":
             extra_goal_instruction = """
 INSTRUCCIÓN ESPECIAL — PRECIO DESDE HERRAMIENTA:
@@ -235,7 +254,7 @@ Tu misión es evaluar la calidad técnica de la respuesta del agente, PERO respe
 - NO penalices al agente por haber usado Athena en vez de Dynamo o viceversa.
 - Sí debes penalizar si no hay grounding cuando el caso lo exige.
 - También debes penalizar si la respuesta final contradice los valores esperados.
-{extra_goal_instruction}
+{extra_goal_instruction}{breakdown_instruction}
 CONTEXTO:
 - Pregunta: {json.dumps(user_input, ensure_ascii=False)}
 - Respuesta final del agente: {json.dumps(agent_response, ensure_ascii=False)}
