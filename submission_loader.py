@@ -10,6 +10,16 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, List, Optional
 
+# Module-level sentinel and global used by the LLM shim system (see _install_llm_shims).
+_SHIM_MISSING = object()
+_active_restore_shims: Optional[Callable] = None
+
+# Lock judge model at import time — before ANY team .env can contaminate MODEL_ID.
+# _inject_aws_env() sets EVAL_JUDGE_MODEL_ID to this value on every team load,
+# preventing a prior team's load_dotenv() from poisoning the judge model.
+_LOCKED_JUDGE_MODEL  = os.getenv("MODEL_ID",   "us.anthropic.claude-sonnet-4-5-20250929-v1:0")
+_LOCKED_JUDGE_REGION = os.getenv("AWS_REGION", "us-east-2")
+
 # ─────────────────────────────────────────────────────────────────────────────
 # DynamoDB table-name redirect
 # Some teams hardcode Retail* table names.  We transparently redirect those to
@@ -112,6 +122,42 @@ def _install_dynamo_name_redirect():
 
 _install_dynamo_name_redirect()
 
+
+def _install_bedrock_model_upgrade():
+    """
+    Patch strands BedrockModel so that any hardcoded deprecated model ID
+    (e.g. claude-3-5-haiku-20241022) is silently upgraded to the working
+    equivalent.  Students often hardcode model IDs; env-var injection can't
+    fix those.  Installed once at module-import time.
+    """
+    _UPGRADES = {
+        # Haiku 3.5 → Haiku 4.5 (3.5 deprecated in this account)
+        "claude-3-5-haiku": "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+        # Claude 4 / Sonnet 4 series require Anthropic use-case form approval
+        "claude-sonnet-4-20250514": "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+        "claude-opus-4":            "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+    }
+
+    try:
+        from strands.models import BedrockModel as _BM
+        _orig_init = _BM.__init__
+
+        def _patched_init(self, *args, **kwargs):
+            model_id = kwargs.get("model_id", "")
+            for fragment, replacement in _UPGRADES.items():
+                if fragment in str(model_id):
+                    print(f"  [loader] BedrockModel model upgrade: {model_id!r} → {replacement!r}")
+                    kwargs["model_id"] = replacement
+                    break
+            _orig_init(self, *args, **kwargs)
+
+        _BM.__init__ = _patched_init
+    except Exception as exc:
+        print(f"  [loader] WARNING: BedrockModel upgrade patch failed: {exc}")
+
+
+_install_bedrock_model_upgrade()
+
 _TRACE_FN_NAMES = ("reset_session", "get_tool_trace", "get_tool_trace_length", "get_tool_trace_since")
 
 
@@ -198,6 +244,9 @@ class SubmissionInfo:
     readme_content: str = ""
     # pip install log (from cache or fresh install); empty if no requirements.txt
     install_log: str = ""
+    # Callable that undoes LLM shims installed for this team.  None = no shims.
+    # Call before loading the next team to restore the original SDK classes.
+    restore_shims: Optional[Callable] = field(default=None, repr=False)
 
     @property
     def ready(self) -> bool:
@@ -263,7 +312,12 @@ class SubmissionLoader:
         extract_dir = self.work_dir / team_name
 
         if extract_dir.exists():
-            shutil.rmtree(extract_dir)
+            shutil.rmtree(extract_dir, ignore_errors=True)
+            # If rmtree failed silently (e.g. cpython-3.14 .pyc files with odd
+            # permissions), force-remove any surviving files before re-creating.
+            if extract_dir.exists():
+                import subprocess
+                subprocess.run(["rm", "-rf", str(extract_dir)], check=False)
         extract_dir.mkdir(parents=True)
 
         sub = SubmissionInfo(
@@ -323,7 +377,9 @@ class SubmissionLoader:
 
         # Step 7: dynamic import
         try:
-            sub._create_agent_fn = _dynamic_import_create_agent(root_dir, team_name)
+            sub._create_agent_fn, sub.restore_shims = _dynamic_import_create_agent(
+                root_dir, team_name, sub.backend_tag
+            )
             # Snapshot the team's core module so create_agent() can restore it
             # later — avoids lazy relative imports resolving against a different
             # team's core/ when multiple teams are loaded before evaluation runs.
@@ -715,12 +771,10 @@ def _inject_aws_env() -> dict:
             os.environ[key] = val  # explicit re-set (prevents accidental unset)
 
     # Protect judge model from team .env contamination.
-    # EVAL_JUDGE_MODEL_ID and EVAL_JUDGE_REGION are read by base_judge._call_llm()
-    # on every invocation and are NEVER overridden by team load_dotenv() calls.
-    _JUDGE_MODEL  = "us.anthropic.claude-sonnet-4-20250514-v1:0"
-    _JUDGE_REGION = "us-east-2"
-    os.environ["EVAL_JUDGE_MODEL_ID"] = _JUDGE_MODEL
-    os.environ["EVAL_JUDGE_REGION"]   = _JUDGE_REGION
+    # Use values locked at module-import time (_LOCKED_JUDGE_MODEL / _LOCKED_JUDGE_REGION),
+    # captured before any team's load_dotenv() can contaminate MODEL_ID.
+    os.environ["EVAL_JUDGE_MODEL_ID"] = _LOCKED_JUDGE_MODEL
+    os.environ["EVAL_JUDGE_REGION"]   = _LOCKED_JUDGE_REGION
 
     # Ensure region has a default so boto3 clients created at module level work.
     os.environ.setdefault("AWS_DEFAULT_REGION", "us-east-2")
@@ -767,6 +821,59 @@ def _inject_aws_env() -> dict:
     # Force Bedrock so they hit the correct backend in our eval environment.
     os.environ.setdefault("LLM_PROVIDER", "bedrock")
     os.environ.setdefault("LLM_BACKEND", "bedrock")
+
+    # Bedrock model IDs — inject our known-working model so teams that read their
+    # model from env vars get a model accessible in this account.
+    # setdefault: teams whose shell already has a valid model keep it.
+    # This runs BEFORE team's load_dotenv(), so the injected values survive
+    # load_dotenv(override=False) calls in team code.
+    _WORKING_MODEL = _LOCKED_JUDGE_MODEL  # same as what the project/judge uses
+    _WORKING_HAIKU = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+    for _mk in ("BEDROCK_MODEL_ID", "CLAUDE_MODEL_ID", "CLAUDE_MODEL",
+                "LLM_MODEL_ID", "MODEL_ID"):
+        os.environ.setdefault(_mk, _WORKING_MODEL)
+    # Haiku 3.5 is deprecated — force-upgrade any existing env var that still
+    # references it.  Use os.environ[] (not setdefault) so shell-level values
+    # like MODEL_HAIKU=claude-3-5-haiku-... are also replaced.
+    _DEPRECATED_HAIKU = "claude-3-5-haiku"
+    for _mk in ("MODEL_HAIKU", "HAIKU_MODEL", "BEDROCK_HAIKU_MODEL",
+                "CLAUDE_HAIKU_MODEL", "BEDROCK_HAIKU_MODEL_ID"):
+        current = os.environ.get(_mk, "")
+        if not current or _DEPRECATED_HAIKU in current:
+            os.environ[_mk] = _WORKING_HAIKU
+
+    # ── Multi-backend / factory-pattern teams ───────────────────────────────
+    # Teams that read a PROVIDER/BACKEND env var to choose their LLM backend
+    # (e.g. Harold reads PROVIDER from config.py).  Force Bedrock so they use
+    # the working AWS path instead of Anthropic/Ollama/OpenAI.
+    os.environ.setdefault("PROVIDER",    "bedrock")
+    os.environ.setdefault("USE_BEDROCK", "true")
+    os.environ.setdefault("BACKEND",     "bedrock")
+
+    # Catalina_Torres reads AGENT_LLM_PROVIDER (default 'openai') and
+    # AGENT_LLM_MODEL from env.  Her build_llm_client() has a native Bedrock path.
+    os.environ.setdefault("AGENT_LLM_PROVIDER", "bedrock")
+    os.environ.setdefault("AGENT_LLM_MODEL",    _WORKING_MODEL)
+
+    # Juan_Martin_Paz activates his StrandsLLMAgent when OMNIRETAIL_STRANDS_MODEL
+    # is set (otherwise falls back to deterministic agent).
+    os.environ.setdefault("OMNIRETAIL_STRANDS_MODEL",   _WORKING_MODEL)
+    os.environ.setdefault("OMNIRETAIL_STRANDS_BACKEND", "bedrock")
+
+    # daniel_ceron: USE_LOCAL_MODEL=1 switches to OllamaModel.  Keep it off so
+    # the primary BedrockModel path is used (shim also covers it as backup).
+    os.environ.setdefault("USE_LOCAL_MODEL", "0")
+
+    # Sofia_Moreno checks GROQ_API_KEY at create_agent time and raises ValueError
+    # if missing.  A placeholder satisfies the check; the OpenAI/Groq shim
+    # intercepts the actual call and routes it to Bedrock — the value is unused.
+    os.environ.setdefault("GROQ_API_KEY", "eval-shim-placeholder")
+
+    # juan_sebastian_muñoz uses multiple Bedrock model env vars pointing to
+    # mistral.ministral-3-8b-instruct which is inaccessible here.  Redirect to Haiku.
+    os.environ.setdefault("BEDROCK_CONSOLIDATOR_MODEL_ID",               _WORKING_HAIKU)
+    os.environ.setdefault("BEDROCK_CATALOG_CONSOLIDATOR_MODEL_ID",       _WORKING_HAIKU)
+    os.environ.setdefault("BEDROCK_CATALOG_DETAIL_CONSOLIDATOR_MODEL_ID", _WORKING_HAIKU)
 
     return snapshot
 
@@ -961,7 +1068,324 @@ def _inject_data_files(root_dir: Path, csv_dir: Path):
     print(f"  [loader] Injected CSV data files into {root_dir.name}/data/")
 
 
-def _dynamic_import_create_agent(root_dir: Path, team_name: str) -> Callable:
+# ─────────────────────────────────────────────────────────────────────────────
+# LLM Backend Shims
+# Route non-Bedrock LLM calls through AWS Bedrock transparently.
+# Students couldn't get AWS accounts, so many used Ollama/Groq/OpenAI/Anthropic.
+# These shims intercept those SDK calls and redirect them to our Bedrock model,
+# making their agents work in our eval environment without any code changes.
+# ─────────────────────────────────────────────────────────────────────────────
+
+_SHIM_BEDROCK_MODEL  = "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+_SHIM_BEDROCK_REGION = "us-east-2"
+
+
+def _make_openai_sdk_shim():
+    """
+    Returns a class mimicking openai.OpenAI.
+    .chat.completions.create() calls Bedrock invoke_model (Anthropic format).
+    Response has .choices[0].message.content  (str).
+    """
+    import boto3 as _boto3, json as _json
+
+    class _Msg:
+        def __init__(self, content):
+            self.content  = content
+            self.role     = "assistant"
+            self.tool_calls = []
+
+    class _Choice:
+        def __init__(self, content):
+            self.message      = _Msg(content)
+            self.finish_reason = "stop"
+            self.index        = 0
+
+    class _Completion:
+        def __init__(self, content):
+            self.choices = [_Choice(content)]
+            self.model   = _SHIM_BEDROCK_MODEL
+
+    class _Completions:
+        def create(self, model=None, messages=None, **kwargs):
+            region   = os.getenv("AWS_DEFAULT_REGION", _SHIM_BEDROCK_REGION)
+            model_id = os.getenv("EVAL_JUDGE_MODEL_ID", _SHIM_BEDROCK_MODEL)
+            client   = _boto3.client("bedrock-runtime", region_name=region)
+            msgs = [m for m in (messages or []) if m.get("role") != "system"]
+            body = {
+                "anthropic_version": "bedrock-2023-05-31",
+                "max_tokens": kwargs.get("max_tokens", 512),
+                "messages": [{"role": m["role"], "content": m.get("content", "")} for m in msgs],
+            }
+            sys_msgs = [m["content"] for m in (messages or []) if m.get("role") == "system"]
+            if sys_msgs:
+                body["system"] = "\n".join(sys_msgs)
+            resp   = client.invoke_model(modelId=model_id, body=_json.dumps(body),
+                                         contentType="application/json", accept="application/json")
+            text   = _json.loads(resp["body"].read()).get("content", [{}])[0].get("text", "")
+            return _Completion(text)
+
+    class _Chat:
+        completions = _Completions()
+
+    class _BedrockOpenAIShim:
+        def __init__(self, **kwargs):
+            self.chat = _Chat()
+
+    return _BedrockOpenAIShim
+
+
+def _make_groq_sdk_shim():
+    """
+    Returns a class mimicking groq.Groq.
+    .chat.completions.create() calls Bedrock Converse API (supports tool_calls).
+    Response mimics OpenAI ChatCompletion: .choices[0].message.{content, tool_calls}.
+    """
+    import boto3 as _boto3, json as _json
+
+    class _ToolFn:
+        def __init__(self, name, args):
+            self.name      = name
+            self.arguments = args   # JSON string
+
+    class _ToolCall:
+        def __init__(self, id_, name, args):
+            self.id       = id_
+            self.type     = "function"
+            self.function = _ToolFn(name, args)
+
+    class _Msg:
+        def __init__(self, content, tool_calls=None):
+            self.content    = content
+            self.tool_calls = tool_calls or []
+            self.role       = "assistant"
+
+    class _Choice:
+        def __init__(self, content, tool_calls=None):
+            self.message      = _Msg(content, tool_calls)
+            self.finish_reason = "tool_calls" if tool_calls else "stop"
+            self.index        = 0
+
+    class _Completion:
+        def __init__(self, content, tool_calls=None):
+            self.choices = [_Choice(content, tool_calls)]
+            self.model   = _SHIM_BEDROCK_MODEL
+
+    class _Completions:
+        def create(self, model=None, messages=None, tools=None,
+                   tool_choice="auto", temperature=0, **kwargs):
+            region   = os.getenv("AWS_DEFAULT_REGION", _SHIM_BEDROCK_REGION)
+            model_id = os.getenv("EVAL_JUDGE_MODEL_ID", _SHIM_BEDROCK_MODEL)
+            client   = _boto3.client("bedrock-runtime", region_name=region)
+
+            converse_msgs, sys_prompt = [], None
+            for m in (messages or []):
+                role, content = m.get("role"), m.get("content", "")
+                if role == "system":
+                    sys_prompt = content
+                elif role in ("user", "assistant"):
+                    converse_msgs.append({
+                        "role": role,
+                        "content": [{"text": content}] if isinstance(content, str) else content,
+                    })
+
+            kw = {"modelId": model_id, "messages": converse_msgs}
+            if sys_prompt:
+                kw["system"] = [{"text": sys_prompt}]
+            if tools:
+                kw["toolConfig"] = {"tools": [
+                    {"toolSpec": {
+                        "name":        t.get("function", {}).get("name", ""),
+                        "description": t.get("function", {}).get("description", ""),
+                        "inputSchema": {"json": t.get("function", {}).get("parameters",
+                                                      {"type": "object", "properties": {}})},
+                    }} for t in tools
+                ]}
+
+            resp    = client.converse(**kw)
+            blocks  = resp.get("output", {}).get("message", {}).get("content", [])
+            texts, tcs = [], []
+            for b in blocks:
+                if "text" in b:
+                    texts.append(b["text"])
+                elif "toolUse" in b:
+                    tu = b["toolUse"]
+                    tcs.append(_ToolCall(tu.get("toolUseId", "tc0"),
+                                         tu.get("name", ""),
+                                         _json.dumps(tu.get("input", {}))))
+            return _Completion("\n".join(texts) if texts else None, tcs or None)
+
+    class _Chat:
+        completions = _Completions()
+
+    class _BedrockGroqShim:
+        def __init__(self, **kwargs):
+            self.chat = _Chat()
+
+    return _BedrockGroqShim
+
+
+def _make_anthropic_sdk_shim():
+    """
+    Returns a class mimicking anthropic.Anthropic.
+    .messages.create() calls Bedrock invoke_model (Anthropic format).
+    Response has .content[0].text  (str).
+    """
+    import boto3 as _boto3, json as _json
+
+    class _Block:
+        def __init__(self, text):
+            self.type = "text"
+            self.text = text
+
+    class _Response:
+        def __init__(self, text):
+            self.content     = [_Block(text)]
+            self.stop_reason = "end_turn"
+            self.model       = _SHIM_BEDROCK_MODEL
+
+    class _Messages:
+        def create(self, model=None, messages=None, max_tokens=1024, **kwargs):
+            region   = os.getenv("AWS_DEFAULT_REGION", _SHIM_BEDROCK_REGION)
+            model_id = os.getenv("EVAL_JUDGE_MODEL_ID", _SHIM_BEDROCK_MODEL)
+            client   = _boto3.client("bedrock-runtime", region_name=region)
+            body = {
+                "anthropic_version": "bedrock-2023-05-31",
+                "max_tokens": max_tokens,
+                "messages": messages or [],
+            }
+            if kwargs.get("system"):
+                body["system"] = kwargs["system"]
+            resp = client.invoke_model(modelId=model_id, body=_json.dumps(body),
+                                        contentType="application/json", accept="application/json")
+            text = _json.loads(resp["body"].read()).get("content", [{}])[0].get("text", "")
+            return _Response(text)
+
+    class _BedrockAnthropicShim:
+        def __init__(self, **kwargs):
+            self.messages = _Messages()
+
+    return _BedrockAnthropicShim
+
+
+def _maybe_restore_previous_shims():
+    """Undo LLM shims from the previously loaded team, if any."""
+    global _active_restore_shims
+    if _active_restore_shims is not None:
+        print("  [shim] Restoring previous team's LLM shims")
+        try:
+            _active_restore_shims()
+        except Exception as exc:
+            print(f"  [shim] WARNING: restore failed: {exc}")
+        _active_restore_shims = None
+
+
+def _install_llm_shims(backend_tag: str) -> Optional[Callable]:
+    """
+    Monkey-patch non-Bedrock LLM SDK classes to route through AWS Bedrock.
+    Must be called AFTER _inject_aws_env() and BEFORE exec_module().
+
+    Returns a zero-arg callable that undoes all patches, or None if no patches
+    were needed (standard Bedrock team or unknown).
+
+    Patches are applied globally but are undone when the next team loads,
+    so they are effectively per-team for sequential evaluation.
+    """
+    if backend_tag in ("bedrock", "bedrock-nonstandard", "bedrock+athena", "unknown", "local-csv"):
+        return None
+
+    restorers: list = []
+
+    def _patch(obj, attr, replacement):
+        original = getattr(obj, attr, _SHIM_MISSING)
+        setattr(obj, attr, replacement)
+        def _undo():
+            if original is _SHIM_MISSING:
+                try:
+                    delattr(obj, attr)
+                except AttributeError:
+                    pass
+            else:
+                setattr(obj, attr, original)
+        restorers.append(_undo)
+
+    # Helper: shim a strands model class and update its parent module __dict__
+    def _shim_strands_class(submodule_name: str, class_name: str, shim_class):
+        try:
+            import strands.models as _sm
+            submod = importlib.import_module(f"strands.models.{submodule_name}")
+            _patch(submod, class_name, shim_class)
+            orig_dict = _sm.__dict__.get(class_name, _SHIM_MISSING)
+            _sm.__dict__[class_name] = shim_class
+            def _undo_dict():
+                if orig_dict is _SHIM_MISSING:
+                    _sm.__dict__.pop(class_name, None)
+                else:
+                    _sm.__dict__[class_name] = orig_dict
+            restorers.append(_undo_dict)
+        except ImportError:
+            pass
+
+    # ── Strands shim factories (reuse BedrockModel directly) ─────────────────
+    def _make_strands_bedrock_shim(display_name: str):
+        """Returns a class whose __new__ returns a BedrockModel instance."""
+        class _StrandsBedrockShim:
+            def __new__(cls, *args, **kwargs):
+                from strands.models import BedrockModel
+                model_id = os.getenv("EVAL_JUDGE_MODEL_ID", _SHIM_BEDROCK_MODEL)
+                region   = os.getenv("AWS_DEFAULT_REGION", _SHIM_BEDROCK_REGION)
+                print(f"  [shim] {display_name}({kwargs.get('model_id', '')!r}) → BedrockModel({model_id!r})")
+                return BedrockModel(model_id=model_id, region_name=region)
+        _StrandsBedrockShim.__name__ = display_name
+        return _StrandsBedrockShim
+
+    # ── Ollama backend ────────────────────────────────────────────────────────
+    if backend_tag == "ollama":
+        _shim_strands_class("ollama", "OllamaModel", _make_strands_bedrock_shim("OllamaModel"))
+
+    # ── OpenAI / Groq backend ─────────────────────────────────────────────────
+    if backend_tag == "openai":
+        _shim_strands_class("openai", "OpenAIModel", _make_strands_bedrock_shim("OpenAIModel"))
+        try:
+            import openai as _oai
+            _patch(_oai, "OpenAI", _make_openai_sdk_shim())
+            if hasattr(_oai, "AsyncOpenAI"):
+                _patch(_oai, "AsyncOpenAI", _make_openai_sdk_shim())
+        except ImportError:
+            pass
+
+    # ── Anthropic-direct / Groq backend ──────────────────────────────────────
+    if backend_tag == "anthropic-direct":
+        _shim_strands_class("anthropic", "AnthropicModel", _make_strands_bedrock_shim("AnthropicModel"))
+        try:
+            import groq as _groq
+            _patch(_groq, "Groq", _make_groq_sdk_shim())
+            if hasattr(_groq, "AsyncGroq"):
+                _patch(_groq, "AsyncGroq", _make_groq_sdk_shim())
+        except ImportError:
+            pass
+        try:
+            import anthropic as _ant
+            _patch(_ant, "Anthropic", _make_anthropic_sdk_shim())
+            if hasattr(_ant, "AsyncAnthropic"):
+                _patch(_ant, "AsyncAnthropic", _make_anthropic_sdk_shim())
+        except ImportError:
+            pass
+
+    if not restorers:
+        return None
+
+    def _restore_all():
+        for undo_fn in reversed(restorers):
+            try:
+                undo_fn()
+            except Exception as exc:
+                print(f"  [shim] WARNING: restore error: {exc}")
+
+    print(f"  [shim] Installed LLM shims for backend_tag={backend_tag!r}")
+    return _restore_all
+
+
+def _dynamic_import_create_agent(root_dir: Path, team_name: str, backend_tag: str = "unknown") -> tuple:
     """
     Importa create_agent dinámicamente desde core/agent.py del equipo.
     El root del equipo ya debe estar en sys.path[0].
@@ -1008,6 +1432,14 @@ def _dynamic_import_create_agent(root_dir: Path, team_name: str) -> Callable:
     # Pre-inject our AWS credentials BEFORE exec_module so that team's load_dotenv()
     # (which by default doesn't override existing env vars) keeps our values.
     aws_snapshot = _inject_aws_env()
+
+    # Install LLM shims BEFORE exec_module so that `from strands.models.ollama import
+    # OllamaModel` (and similar) at module level resolve to our shim classes.
+    # Shims stay active after exec_module (needed when the agent is actually called).
+    _maybe_restore_previous_shims()
+    _restore_fn = _install_llm_shims(backend_tag)
+    global _active_restore_shims
+    _active_restore_shims = _restore_fn
 
     import builtins
     import threading
@@ -1072,4 +1504,4 @@ def _dynamic_import_create_agent(root_dir: Path, team_name: str) -> Callable:
     if not hasattr(module, "create_agent"):
         raise AttributeError("create_agent no encontrado en el módulo cargado")
 
-    return module.create_agent
+    return module.create_agent, _restore_fn

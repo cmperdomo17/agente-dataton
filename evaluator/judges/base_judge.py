@@ -18,7 +18,7 @@ import os
 import re
 
 # Fallback por si EVAL_JUDGE_MODEL_ID no está definido y MODEL_ID tampoco
-_JUDGE_MODEL_FALLBACK = "us.anthropic.claude-sonnet-4-20250514-v1:0"
+_JUDGE_MODEL_FALLBACK = "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
 _JUDGE_REGION_FALLBACK = "us-east-2"
 
 

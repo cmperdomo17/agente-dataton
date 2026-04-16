@@ -26,6 +26,17 @@ class DataJudge(BaseJudge):
         # MARIA_PAULA: Spanish tool names
         "consultar_monto", "consultar_items", "consultar_envio",
         "verificar_identidad", "buscar_productos", "consultar_stock",
+        # Generic entity fragments — students who named tools freely without AWS accounts
+        # verify_customer, check_customer, get_customer_data, etc.
+        "customer", "shipment",
+        # Auth/verification tools that query customer DB
+        "verify", "autenticar", "authenticate", "validar",
+        # Broad consultar prefix covers any consultar_X not listed above
+        "consultar",
+        # Generic query verbs
+        "search_data", "query_data", "fetch_order", "get_order_detail", "get_order_item",
+        # CSV-based local backends (students without AWS used pandas CSV tools)
+        "csv", "dataframe", "read_csv",
     ]
 
     POLICY_KEYWORDS = [
@@ -140,10 +151,21 @@ class DataJudge(BaseJudge):
         if required_any_of_tools:
             any_of_ok = self._satisfies_any_of(tool_names, required_any_of_tools)
             if not any_of_ok:
-                issues.append(
-                    f"No usó ninguna de las tools/backend aceptadas: {', '.join(required_any_of_tools)}."
+                # If ALL options reference data backends AND the student has a non-empty
+                # tool trace, the requires_data_backend check above already applied a
+                # soft score cap.  Don't stack penalties — many students didn't have
+                # AWS accounts and used differently-named tools; that was the organizer's
+                # fault, not the student's.
+                all_data_refs = all(
+                    self._references_data_backend([opt]) for opt in required_any_of_tools
                 )
-                score_cap = min(score_cap, 50)
+                if all_data_refs and tool_trace:
+                    pass  # already penalized by requires_data_backend check above
+                else:
+                    issues.append(
+                        f"No usó ninguna de las tools/backend aceptadas: {', '.join(required_any_of_tools)}."
+                    )
+                    score_cap = min(score_cap, 50)
 
         # Numeric correctness
         expected_values = expected_data.get("expected_values", {}) or {}
@@ -252,6 +274,12 @@ Actúa como un Auditor de Datos y QA Engineer Senior.
 Tu misión es evaluar la calidad técnica de la respuesta del agente, PERO respetando estas reglas:
 - Athena y Dynamo son igualmente válidos como backend de datos en esta etapa.
 - NO penalices al agente por haber usado Athena en vez de Dynamo o viceversa.
+- Muchos estudiantes no tuvieron acceso a AWS y usaron herramientas con nombres distintos
+  (verify_customer, search_order, consultar_csv, get_order_data, etc.). Si el tool trace
+  muestra que el agente consultó datos activamente, considéralo grounding válido
+  independientemente del nombre de la herramienta o del backend utilizado.
+- Solo penaliza por falta de grounding si el trace está COMPLETAMENTE VACÍO y la respuesta
+  requería datos de clientes/pedidos que no se pueden saber sin consultar.
 - Sí debes penalizar si no hay grounding cuando el caso lo exige.
 - También debes penalizar si la respuesta final contradice los valores esperados.
 {extra_goal_instruction}{breakdown_instruction}
