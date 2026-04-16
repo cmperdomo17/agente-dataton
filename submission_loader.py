@@ -271,19 +271,21 @@ def _validate_contract(root_dir: Path) -> List[ContractCheck]:
 def _ensure_session_context(root_dir: Path):
     """Copy our session_context.py into the team's core/ if they don't have one."""
     target = root_dir / "core" / "session_context.py"
-    if target.exists():
-        return
-    our_session_context = Path(__file__).parent / "core" / "session_context.py"
-    if our_session_context.exists():
-        shutil.copy(our_session_context, target)
+    if not target.exists():
+        our_session_context = Path(__file__).parent / "core" / "session_context.py"
+        if our_session_context.exists():
+            shutil.copy(our_session_context, target)
 
-    # Ensure core/__init__.py exists so Python treats it as a regular package.
-    # Without it, Python's import machinery may prefer our own core/ (which has
-    # __init__.py) over the team's core/ (namespace package), causing ImportError
-    # for modules that exist in the team's core/ but not in ours.
-    init_path = root_dir / "core" / "__init__.py"
-    if not init_path.exists():
-        init_path.touch()
+    # Ensure __init__.py exists in core/ and all other Python subdirectories.
+    # Regular packages (with __init__.py) take priority over namespace packages in
+    # sys.path, so this prevents a stale namespace package from a previous team's
+    # `tools/`, `utils/`, etc. shadowing this team's own package of the same name.
+    # NOTE: this loop must always run — do NOT guard behind a session_context check,
+    # as teams that already have session_context.py still need __init__.py created
+    # in their tools/, utils/, etc. subdirectories.
+    for sub in [root_dir / "core"] + [d for d in root_dir.iterdir() if d.is_dir()]:
+        if any(sub.glob("*.py")) and not (sub / "__init__.py").exists():
+            (sub / "__init__.py").touch()
 
 
 def _purge_team_modules(incoming_root: Path):
@@ -314,11 +316,15 @@ def _purge_team_modules(incoming_root: Path):
         # self-referential package imports (`from challenge.core import ...`).
         # Without this, a cached module from team A is served to team B.
         mod_file = getattr(mod, "__file__", None) or ""
+        # Also check __path__ for namespace packages (tools/, utils/, etc.) which
+        # have __file__=None but __path__ pointing to a previous team's directory.
+        mod_path_strs = [str(p) for p in (getattr(mod, "__path__", None) or [])]
         is_flat_from_other_team = (
             not is_core_ns
-            and mod_file
-            and "omni_eval" in mod_file
-            and str(incoming_root) not in mod_file
+            and (
+                (mod_file and "omni_eval" in mod_file and str(incoming_root) not in mod_file)
+                or any("omni_eval" in p and str(incoming_root) not in p for p in mod_path_strs)
+            )
         )
 
         if not (is_core_ns or is_flat_from_other_team):

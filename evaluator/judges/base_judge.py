@@ -34,9 +34,9 @@ class BaseJudge:
             # por el load_dotenv() de algún equipo evaluado anteriormente.
             # EVAL_JUDGE_MODEL_ID es forzado por submission_loader antes de cualquier
             # carga de ZIP, por lo que tiene prioridad sobre MODEL_ID de equipos.
-            model_id  = (os.getenv("EVAL_JUDGE_MODEL_ID")
-                         or os.getenv("MODEL_ID")
-                         or _JUDGE_MODEL_FALLBACK)
+            # Do NOT fall back to MODEL_ID — teams override that with their own
+            # agent model (potentially non-Claude), contaminating judge calls.
+            model_id  = os.getenv("EVAL_JUDGE_MODEL_ID") or _JUDGE_MODEL_FALLBACK
             aws_region = (os.getenv("EVAL_JUDGE_REGION")
                           or os.getenv("AWS_REGION")
                           or _JUDGE_REGION_FALLBACK)
