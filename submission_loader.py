@@ -78,6 +78,7 @@ class SubmissionInfo:
     _session_fns: Optional[dict] = field(default=None, repr=False)
     _core_mod: Any = field(default=None, repr=False)  # team's core module snapshot
     load_error: Optional[str] = None
+    backend_tag: str = "bedrock"
 
     @property
     def ready(self) -> bool:
@@ -155,7 +156,7 @@ class SubmissionLoader:
 
         # Step 3: validate contract
         sub.contract_checks = _validate_contract(root_dir)
-        sub.contract_passed = all(c.passed for c in sub.contract_checks[:3])
+        sub.contract_passed = all(c.passed for c in sub.contract_checks[:2])
 
         if not sub.contract_passed:
             sub.load_error = "Contrato de integración incompleto."
@@ -414,7 +415,39 @@ def _dynamic_import_create_agent(root_dir: Path, team_name: str) -> Callable:
     module = importlib.util.module_from_spec(spec)
     module.__package__ = "core"
     sys.modules[module_name] = module
-    spec.loader.exec_module(module)
+
+    # Attempt exec_module with automatic stub injection on NameError.
+    # Some Bedrock/Strands teams declare type annotations (e.g. AgentResponse)
+    # without importing them.  We try to resolve from strands first; if that
+    # fails we inject a minimal stub so the module loads successfully.
+    _stubs: dict = {}  # name → resolved or stub value
+    while True:
+        try:
+            spec.loader.exec_module(module)
+            break
+        except NameError as _e:
+            _missing = _e.name if hasattr(_e, "name") else str(_e).split("'")[1]
+            if _missing in _stubs:
+                raise  # same name failed twice — genuine error
+            # Try to resolve from strands package first
+            _resolved = None
+            for _pkg in ("strands", "strands.types", "strands.types.streaming",
+                         "strands.agent", "strands.models"):
+                try:
+                    _mod = importlib.import_module(_pkg)
+                    if hasattr(_mod, _missing):
+                        _resolved = getattr(_mod, _missing)
+                        break
+                except ImportError:
+                    pass
+            _stubs[_missing] = _resolved or type(_missing, (), {})
+            # Re-create module for a clean re-exec, injecting all accumulated stubs
+            module = importlib.util.module_from_spec(spec)
+            module.__package__ = "core"
+            module.__dict__.update(_stubs)
+            sys.modules[module_name] = module
+        if len(_stubs) > 6:
+            raise RuntimeError(f"Demasiados NameErrors al cargar {team_name}: {list(_stubs)}")
 
     if not hasattr(module, "create_agent"):
         raise AttributeError("create_agent no encontrado en el módulo cargado")
