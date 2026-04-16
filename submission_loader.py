@@ -926,17 +926,26 @@ def _inject_aws_env() -> dict:
 
 def _post_clean_aws_env(snapshot: dict):
     """
-    After team module loads (and their load_dotenv() may have run), remove any
-    empty-string AWS credential vars the student's .env may have introduced.
-    Empty strings cause boto3 to use them explicitly instead of falling back to
-    the credential chain (SSO profile, instance metadata, etc.).
+    After team module loads (and their load_dotenv() may have run), fully restore
+    the AWS environment to its pre-load state.
+
+    Simply removing empty-string vars is not enough: teams with static AKIA*
+    credentials in their .env will overwrite our SSO/profile-based creds, causing
+    subsequent BedrockModel calls to hit the wrong AWS account.  Full restoration
+    guarantees our evaluator credentials are always in effect after loading any team.
     """
-    _CRITICAL = ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN"]
+    _CRITICAL = [
+        "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN",
+        "AWS_PROFILE",
+    ]
     for key in _CRITICAL:
-        if os.environ.get(key, None) == "":
+        if key in snapshot:
+            # We had this key before team load — restore it unconditionally.
+            os.environ[key] = snapshot[key]
+        elif key in os.environ:
+            # Team introduced this key (e.g. static AKIA* cred) and we didn't
+            # have it — purge it so it can't contaminate the next team's load.
             os.environ.pop(key, None)
-        elif key in snapshot and snapshot[key]:
-            os.environ[key] = snapshot[key]  # restore our good value if wiped
 
 
 def _export_dynamo_to_csv(cache_dir: Path) -> Path:
