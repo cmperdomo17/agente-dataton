@@ -556,6 +556,10 @@ def _detect_backend(root_dir: Path) -> tuple:
     if "openai" in combined:
         return ("openai", "openai SDK detectado")
 
+    # Groq (Sofia_Moreno, Eider — use groq SDK as LLM provider)
+    if "groq" in combined:
+        return ("groq", "Groq SDK detectado")
+
     # Anthropic direct (but NOT via Bedrock wrapper)
     if re.search(r'\banthropicbedrock\b|\bbedrockruntime\b|bedrock[-_]runtime|anthropic\.bedrock', combined):
         pass  # falls through to bedrock check below
@@ -1345,10 +1349,46 @@ def _install_llm_shims(backend_tag: str) -> Optional[Callable]:
     Patches are applied globally but are undone when the next team loads,
     so they are effectively per-team for sequential evaluation.
     """
+    # Always shim anthropic.Anthropic for teams whose config.py hardcodes
+    # PROVIDER="anthropic" even when their agent.py imports Bedrock (e.g. Harold).
+    # Backend detection only scans agent.py/requirements.txt, not config.py, so
+    # these teams are tagged "bedrock" while still instantiating anthropic.Anthropic.
+    # Shimming is safe for all tags — pure-bedrock teams don't import anthropic.
+    _always_restorers: list = []
+
+    def _patch_unconditional(obj, attr, replacement):
+        original = getattr(obj, attr, _SHIM_MISSING)
+        setattr(obj, attr, replacement)
+        def _undo():
+            if original is _SHIM_MISSING:
+                try:
+                    delattr(obj, attr)
+                except AttributeError:
+                    pass
+            else:
+                setattr(obj, attr, original)
+        _always_restorers.append(_undo)
+
+    try:
+        import anthropic as _ant_always
+        _patch_unconditional(_ant_always, "Anthropic", _make_anthropic_sdk_shim())
+        if hasattr(_ant_always, "AsyncAnthropic"):
+            _patch_unconditional(_ant_always, "AsyncAnthropic", _make_anthropic_sdk_shim())
+    except ImportError:
+        pass
+
     if backend_tag in ("bedrock", "bedrock-nonstandard", "bedrock+athena", "unknown", "local-csv"):
+        if _always_restorers:
+            def _restore_always():
+                for fn in reversed(_always_restorers):
+                    try:
+                        fn()
+                    except Exception:
+                        pass
+            return _restore_always
         return None
 
-    restorers: list = []
+    restorers: list = _always_restorers
 
     def _patch(obj, attr, replacement):
         original = getattr(obj, attr, _SHIM_MISSING)
@@ -1419,16 +1459,9 @@ def _install_llm_shims(backend_tag: str) -> Optional[Callable]:
         except ImportError:
             pass
 
-    # ── Anthropic-direct / Groq backend ──────────────────────────────────────
+    # ── Anthropic-direct backend ──────────────────────────────────────────────
     if backend_tag == "anthropic-direct":
         _shim_strands_class("anthropic", "AnthropicModel", _make_strands_bedrock_shim("AnthropicModel"))
-        try:
-            import groq as _groq
-            _patch(_groq, "Groq", _make_groq_sdk_shim())
-            if hasattr(_groq, "AsyncGroq"):
-                _patch(_groq, "AsyncGroq", _make_groq_sdk_shim())
-        except ImportError:
-            pass
         try:
             import anthropic as _ant
             _patch(_ant, "Anthropic", _make_anthropic_sdk_shim())
@@ -1436,6 +1469,17 @@ def _install_llm_shims(backend_tag: str) -> Optional[Callable]:
                 _patch(_ant, "AsyncAnthropic", _make_anthropic_sdk_shim())
         except ImportError:
             pass
+
+    # ── Groq backend (Sofia_Moreno, Eider_Yesid — use Groq SDK as LLM) ───────
+    if backend_tag == "groq":
+        try:
+            import groq as _groq
+            _patch(_groq, "Groq", _make_groq_sdk_shim())
+            if hasattr(_groq, "AsyncGroq"):
+                _patch(_groq, "AsyncGroq", _make_groq_sdk_shim())
+        except ImportError:
+            pass
+
 
     if not restorers:
         return None
