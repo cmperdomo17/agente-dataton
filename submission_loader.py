@@ -174,6 +174,13 @@ class SubmissionLoader:
         # Step 6: inject team root into sys.path
         _inject_path_permanently(root_dir)
 
+        # Step 6b: override Athena/S3 output env vars before exec_module fires.
+        # load_dotenv() (called inside the team's module) does NOT override existing
+        # env vars by default, so setting these now prevents teams that have a wrong
+        # or non-existent output bucket (e.g. 'datasets-strands') from breaking
+        # Athena queries during evaluation.
+        _inject_athena_env()
+
         # Step 7: dynamic import
         try:
             sub._create_agent_fn = _dynamic_import_create_agent(root_dir, team_name)
@@ -266,6 +273,25 @@ def _validate_contract(root_dir: Path) -> List[ContractCheck]:
     ))
 
     return checks
+
+
+_ATHENA_BUCKET = "dataton-challenge-unicauca"
+
+
+def _inject_athena_env():
+    """
+    Set Athena/S3 output env vars before exec_module runs.
+
+    load_dotenv() (called inside team modules) does NOT override existing env
+    vars by default, so values set here take priority over whatever bucket name
+    a team may have hardcoded in their .env (e.g. 'datasets-strands').
+    Uses setdefault so a correctly configured environment is never disturbed.
+    """
+    os.environ.setdefault("ATHENA_OUTPUT",    f"s3://{_ATHENA_BUCKET}/athena-results/")
+    os.environ.setdefault("ATHENA_S3_OUTPUT", f"s3://{_ATHENA_BUCKET}/athena-results/")
+    os.environ.setdefault("ATHENA_WORKGROUP", "primary")
+    os.environ.setdefault("ATHENA_DB",        "dataton_db")
+    os.environ.setdefault("ATHENA_DATABASE",  "dataton_db")
 
 
 def _ensure_session_context(root_dir: Path):
