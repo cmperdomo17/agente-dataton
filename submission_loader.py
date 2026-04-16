@@ -79,6 +79,8 @@ class SubmissionInfo:
     _core_mod: Any = field(default=None, repr=False)  # team's core module snapshot
     load_error: Optional[str] = None
     backend_tag: str = "bedrock"
+    backend_notes: str = ""
+    is_nonstandard_backend: bool = False
 
     @property
     def ready(self) -> bool:
@@ -416,11 +418,11 @@ def _dynamic_import_create_agent(root_dir: Path, team_name: str) -> Callable:
     module.__package__ = "core"
     sys.modules[module_name] = module
 
-    # Attempt exec_module with automatic stub injection on NameError.
-    # Some Bedrock/Strands teams declare type annotations (e.g. AgentResponse)
-    # without importing them.  We try to resolve from strands first; if that
-    # fails we inject a minimal stub so the module loads successfully.
-    _stubs: dict = {}  # name → resolved or stub value
+    # Attempt exec_module with automatic recovery on NameError / ModuleNotFoundError.
+    # Some Bedrock/Strands teams declare type annotations without importing them
+    # (NameError), or place helper packages outside the core/ root (ModuleNotFoundError).
+    _stubs: dict = {}       # name → resolved or stub value
+    _path_fixes: set = set()  # paths already added to sys.path for missing packages
     while True:
         try:
             spec.loader.exec_module(module)
@@ -446,8 +448,30 @@ def _dynamic_import_create_agent(root_dir: Path, team_name: str) -> Callable:
             module.__package__ = "core"
             module.__dict__.update(_stubs)
             sys.modules[module_name] = module
-        if len(_stubs) > 6:
-            raise RuntimeError(f"Demasiados NameErrors al cargar {team_name}: {list(_stubs)}")
+        except ModuleNotFoundError as _e:
+            # A team-local package (e.g. tools.tool) couldn't be found.
+            # This usually means the package lives outside root_dir — e.g. tools/
+            # is a sibling of the core/ folder at root_dir.parent.
+            # Walk upward from root_dir to find the top-level package directory.
+            _top_pkg = (_e.name or "").split(".")[0]
+            _fixed = False
+            for _search in [root_dir, root_dir.parent, root_dir.parent.parent]:
+                if (_search / _top_pkg).is_dir() or (_search / f"{_top_pkg}.py").exists():
+                    _search_str = str(_search)
+                    if _search_str not in _path_fixes:
+                        _path_fixes.add(_search_str)
+                        sys.path.insert(0, _search_str)
+                        _fixed = True
+                        break
+            if not _fixed:
+                raise  # genuinely missing, not a path issue
+            # Re-create module so the exec starts clean with the new path
+            module = importlib.util.module_from_spec(spec)
+            module.__package__ = "core"
+            module.__dict__.update(_stubs)
+            sys.modules[module_name] = module
+        if len(_stubs) + len(_path_fixes) > 8:
+            raise RuntimeError(f"Demasiados errores de importación al cargar {team_name}")
 
     if not hasattr(module, "create_agent"):
         raise AttributeError("create_agent no encontrado en el módulo cargado")
