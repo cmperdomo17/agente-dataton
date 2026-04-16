@@ -424,60 +424,84 @@ def _dynamic_import_create_agent(root_dir: Path, team_name: str) -> Callable:
     module.__package__ = "core"
     sys.modules[module_name] = module
 
-    # Attempt exec_module with automatic recovery on NameError / ModuleNotFoundError.
-    # Some Bedrock/Strands teams declare type annotations without importing them
-    # (NameError), or place helper packages outside the core/ root (ModuleNotFoundError).
-    _stubs: dict = {}       # name → resolved or stub value
-    _path_fixes: set = set()  # paths already added to sys.path for missing packages
-    while True:
+    # Run exec_module in a daemon thread so we can:
+    #   1. Intercept builtins.input — teams with an interactive REPL at module level
+    #      (e.g. `while True: user_input = input(...)`) would block forever otherwise.
+    #   2. Enforce a hard 45 s timeout — teams doing heavy I/O (DynamoDB preload, etc.)
+    #      at module load time won't stall the whole batch run.
+    # Inside the thread we also retry on NameError (annotation stubs) and
+    # ModuleNotFoundError (packages placed outside root_dir).
+    import builtins
+    import threading
+
+    _load_exc: list = []
+    _base_dict = {k: v for k, v in module.__dict__.items()}
+    _real_input = builtins.input
+
+    def _stub_input(prompt=""):
+        print(f"  [loader] input() interceptado (prompt={str(prompt)[:60]!r}) → devolviendo 'salir'")
+        return "salir"
+
+    def _do_exec():
+        _stubs: dict = {}
+        _path_fixes: set = set()
+        builtins.input = _stub_input
         try:
-            spec.loader.exec_module(module)
-            break
-        except NameError as _e:
-            _missing = _e.name if hasattr(_e, "name") else str(_e).split("'")[1]
-            if _missing in _stubs:
-                raise  # same name failed twice — genuine error
-            # Try to resolve from strands package first
-            _resolved = None
-            for _pkg in ("strands", "strands.types", "strands.types.streaming",
-                         "strands.agent", "strands.models"):
+            for _attempt in range(10):
                 try:
-                    _mod = importlib.import_module(_pkg)
-                    if hasattr(_mod, _missing):
-                        _resolved = getattr(_mod, _missing)
-                        break
-                except ImportError:
-                    pass
-            _stubs[_missing] = _resolved or type(_missing, (), {})
-            # Re-create module for a clean re-exec, injecting all accumulated stubs
-            module = importlib.util.module_from_spec(spec)
-            module.__package__ = "core"
-            module.__dict__.update(_stubs)
-            sys.modules[module_name] = module
-        except ModuleNotFoundError as _e:
-            # A team-local package (e.g. tools.tool) couldn't be found.
-            # This usually means the package lives outside root_dir — e.g. tools/
-            # is a sibling of the core/ folder at root_dir.parent.
-            # Walk upward from root_dir to find the top-level package directory.
-            _top_pkg = (_e.name or "").split(".")[0]
-            _fixed = False
-            for _search in [root_dir, root_dir.parent, root_dir.parent.parent]:
-                if (_search / _top_pkg).is_dir() or (_search / f"{_top_pkg}.py").exists():
-                    _search_str = str(_search)
-                    if _search_str not in _path_fixes:
-                        _path_fixes.add(_search_str)
-                        sys.path.insert(0, _search_str)
-                        _fixed = True
-                        break
-            if not _fixed:
-                raise  # genuinely missing, not a path issue
-            # Re-create module so the exec starts clean with the new path
-            module = importlib.util.module_from_spec(spec)
-            module.__package__ = "core"
-            module.__dict__.update(_stubs)
-            sys.modules[module_name] = module
-        if len(_stubs) + len(_path_fixes) > 8:
-            raise RuntimeError(f"Demasiados errores de importación al cargar {team_name}")
+                    if _attempt > 0:
+                        module.__dict__.clear()
+                        module.__dict__.update(_base_dict)
+                        module.__dict__.update(_stubs)
+                    spec.loader.exec_module(module)
+                    return  # success
+                except NameError as _e:
+                    _missing = _e.name if hasattr(_e, "name") else str(_e).split("'")[1]
+                    if _missing in _stubs:
+                        _load_exc.append(_e)
+                        return
+                    _resolved = None
+                    for _pkg in ("strands", "strands.types", "strands.types.streaming",
+                                 "strands.agent", "strands.models"):
+                        try:
+                            _m = importlib.import_module(_pkg)
+                            if hasattr(_m, _missing):
+                                _resolved = getattr(_m, _missing)
+                                break
+                        except ImportError:
+                            pass
+                    _stubs[_missing] = _resolved or type(_missing, (), {})
+                except ModuleNotFoundError as _e:
+                    _top_pkg = (_e.name or "").split(".")[0]
+                    _fixed = False
+                    for _search in [root_dir, root_dir.parent, root_dir.parent.parent]:
+                        if (_search / _top_pkg).is_dir() or (_search / f"{_top_pkg}.py").exists():
+                            _s = str(_search)
+                            if _s not in _path_fixes:
+                                _path_fixes.add(_s)
+                                sys.path.insert(0, _s)
+                                _fixed = True
+                                break
+                    if not _fixed:
+                        _load_exc.append(_e)
+                        return
+                except Exception as _e:
+                    _load_exc.append(_e)
+                    return
+            _load_exc.append(RuntimeError(f"Demasiados errores de importación: stubs={list(_stubs)}, paths={list(_path_fixes)}"))
+        finally:
+            builtins.input = _real_input
+
+    _t = threading.Thread(target=_do_exec, daemon=True)
+    _t.start()
+    _t.join(timeout=45)
+    if _t.is_alive():
+        raise TimeoutError(
+            f"El módulo de {team_name} tardó más de 45 s en cargar "
+            "(posible REPL o carga pesada de datos en nivel de módulo)"
+        )
+    if _load_exc:
+        raise _load_exc[0]
 
     if not hasattr(module, "create_agent"):
         raise AttributeError("create_agent no encontrado en el módulo cargado")
