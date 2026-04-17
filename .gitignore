@@ -28,6 +28,8 @@ Thumbs.db
 politicas/
 results/
 submissions/*.zip
+submissions-aws/*.zip
 submissions/.eval_cache/
 .claude/
+.claude/settings.json
 .claude/settings.json

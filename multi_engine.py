@@ -24,6 +24,11 @@ class MultiEngine:
         "startqueryexecution",    # AWS SDK error message operation name
         "database not found",
         "glue catalog",
+        # Invalid / expired AWS credentials in the team's environment
+        "unrecognizedclientexception",
+        "security token included in the request is invalid",
+        "the security token",
+        "invalidclienttokenid",
     )
 
     def __init__(

@@ -188,11 +188,15 @@ def _install_bedrock_model_upgrade():
         _orig_init = _BM.__init__
 
         def _patched_init(self, *args, **kwargs):
-            model_id = kwargs.get("model_id", "")
+            # model_id can arrive as positional arg[0] or keyword
+            model_id = kwargs.get("model_id") or (args[0] if args else "")
             for fragment, replacement in _UPGRADES.items():
                 if fragment in str(model_id):
                     print(f"  [loader] BedrockModel model upgrade: {model_id!r} → {replacement!r}")
-                    kwargs["model_id"] = replacement
+                    if args:
+                        args = (replacement,) + args[1:]
+                    else:
+                        kwargs["model_id"] = replacement
                     break
             _orig_init(self, *args, **kwargs)
 
@@ -202,6 +206,214 @@ def _install_bedrock_model_upgrade():
 
 
 _install_bedrock_model_upgrade()
+
+
+def _install_bedrock_client_normalizer():
+    """
+    Patch boto3.client('bedrock-runtime') to return a wrapper that normalizes
+    request/response formats for teams whose code was written against a different
+    API shape than what boto3 actually returns.
+
+    Converse response normalizer (fixes JuanFe / any team that expects the flat format):
+      boto3 Converse API returns {'toolUse': {'toolUseId':…, 'name':…, 'input':…}}
+      without a top-level 'type' key.  Some teams (and their local mock backends)
+      assume a flat format with 'type', 'toolUseId', 'name', 'input' at the top level.
+      We add the flat keys IN ADDITION to the nested 'toolUse' key — no existing
+      code that accesses block['toolUse'] is broken.
+
+    InvokeModel request normalizer (fixes jorge_andres / teams using Converse format
+    sent to invoke_model):
+      Teams that use Nova via invoke_model sometimes send Converse-style bodies
+      (with 'inferenceConfig') but omit 'type' from content blocks.  Nova's
+      invoke_model schema requires 'type'.  We add 'type':'text' to any text-only
+      content block that is missing the field.
+    """
+    try:
+        import boto3
+        import boto3.session as _boto3_session
+        import json as _json
+
+        _orig_client_fn  = boto3.client
+        _orig_ses_client = _boto3_session.Session.client
+
+        class _BedrockClientWrapper:
+            """Thin wrapper around a boto3 bedrock-runtime client."""
+            __slots__ = ("_real",)
+
+            def __init__(self, real):
+                object.__setattr__(self, "_real", real)
+
+            # ── Converse: upgrade model ID + normalize response ──────────────
+            def converse(self, **kwargs):
+                real = object.__getattribute__(self, "_real")
+                # Upgrade deprecated model IDs before the call
+                _CONVERSE_UPGRADES = {
+                    "claude-3-5-haiku": "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+                    "claude-sonnet-4-20250514": "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+                    "claude-opus-4": "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+                }
+                mid = str(kwargs.get("modelId", ""))
+                for frag, repl in _CONVERSE_UPGRADES.items():
+                    if frag in mid:
+                        print(f"  [loader] Converse model upgrade: {mid!r} → {repl!r}")
+                        kwargs = dict(kwargs)
+                        kwargs["modelId"] = repl
+                        break
+                # Strip flat keys we may have injected into previous response blocks.
+                # Teams store the normalised response in their conversation history and
+                # resend it; AWS rejects blocks that have BOTH a "toolUse" dict AND a
+                # flat "type" key (tagged-union violation).
+                _FLAT_KEYS = ("type", "toolUseId", "name", "input")
+                messages = kwargs.get("messages")
+                if messages:
+                    cleaned = False
+                    new_messages = []
+                    for msg in messages:
+                        content = msg.get("content", [])
+                        if isinstance(content, list):
+                            new_content = []
+                            for block in content:
+                                if isinstance(block, dict) and "toolUse" in block:
+                                    block = {k: v for k, v in block.items()
+                                             if k not in _FLAT_KEYS}
+                                    cleaned = True
+                                new_content.append(block)
+                            msg = dict(msg); msg["content"] = new_content
+                        new_messages.append(msg)
+                    if cleaned:
+                        kwargs = dict(kwargs); kwargs["messages"] = new_messages
+                response = real.converse(**kwargs)
+                try:
+                    content = (
+                        response.get("output", {})
+                                .get("message", {})
+                                .get("content", [])
+                    )
+                    for block in content:
+                        if isinstance(block, dict) and "toolUse" in block and "type" not in block:
+                            tu = block["toolUse"]
+                            # Add flat keys alongside the nested toolUse dict
+                            block["type"]      = "toolUse"
+                            block["toolUseId"] = tu.get("toolUseId", "")
+                            block["name"]      = tu.get("name", "")
+                            block["input"]     = tu.get("input", {})
+                except Exception:
+                    pass
+                return response
+
+            # ── invoke_model: normalize body format + response ───────────────
+            def invoke_model(self, **kwargs):
+                real = object.__getattribute__(self, "_real")
+                is_converse_fmt = False
+                is_claude = False
+                try:
+                    body = kwargs.get("body", "")
+                    model_id = str(kwargs.get("modelId", ""))
+                    is_claude = "anthropic" in model_id.lower() or "claude" in model_id.lower()
+                    if isinstance(body, (str, bytes)):
+                        body_dict = _json.loads(body)
+                        is_converse_fmt = (
+                            "inferenceConfig" in body_dict
+                            or ("messages" in body_dict and "anthropic_version" not in body_dict)
+                        )
+                        if is_converse_fmt:
+                            changed = False
+
+                            # Add type field to content blocks missing it
+                            for msg in body_dict.get("messages", []):
+                                content = msg.get("content", [])
+                                if isinstance(content, list):
+                                    for blk in content:
+                                        if isinstance(blk, dict) and "type" not in blk:
+                                            if "text" in blk:
+                                                blk["type"] = "text"
+                                                changed = True
+                                            elif "toolResult" in blk:
+                                                blk["type"] = "toolResult"
+                                                changed = True
+
+                            if is_claude and "anthropic_version" not in body_dict:
+                                # Convert Converse-style body to Claude Messages API format
+                                inf = body_dict.pop("inferenceConfig", {})
+                                body_dict["anthropic_version"] = "bedrock-2023-05-31"
+                                if "maxTokens" in inf and "max_tokens" not in body_dict:
+                                    body_dict["max_tokens"] = inf["maxTokens"]
+                                elif "max_tokens" not in body_dict:
+                                    body_dict["max_tokens"] = 1024
+                                if "temperature" in inf and "temperature" not in body_dict:
+                                    body_dict["temperature"] = inf["temperature"]
+                                # Do NOT inject top_p — Claude rejects requests with both
+                                # temperature AND top_p set simultaneously.
+                                # system: [{"text": "..."}] → plain string
+                                sys_val = body_dict.get("system")
+                                if isinstance(sys_val, list):
+                                    texts = [b.get("text", "") for b in sys_val if isinstance(b, dict)]
+                                    body_dict["system"] = "\n".join(texts)
+                                changed = True
+
+                            if changed:
+                                kwargs = dict(kwargs)
+                                kwargs["body"] = _json.dumps(body_dict)
+                except Exception:
+                    pass
+
+                response = real.invoke_model(**kwargs)
+
+                # If body was Converse-format and model is Claude, the raw response
+                # is Claude Messages API format.  Re-wrap as Converse output.message
+                # so callers that expect output.message.content can parse it.
+                if is_converse_fmt and is_claude:
+                    try:
+                        import io as _io
+                        raw_body = response.get("body")
+                        if raw_body is not None:
+                            raw_bytes = raw_body.read() if hasattr(raw_body, "read") else raw_body
+                            resp_dict = _json.loads(raw_bytes)
+                            if "content" in resp_dict and "output" not in resp_dict:
+                                converse_content = [
+                                    {"type": "text", "text": blk.get("text", "")}
+                                    for blk in resp_dict.get("content", [])
+                                    if isinstance(blk, dict) and blk.get("type") == "text"
+                                ]
+                                stop_map = {"end_turn": "end_turn", "tool_use": "tool_use",
+                                            "max_tokens": "max_tokens"}
+                                wrapped = {
+                                    "output": {"message": {"role": "assistant", "content": converse_content}},
+                                    "stopReason": stop_map.get(resp_dict.get("stop_reason", "end_turn"), "end_turn"),
+                                }
+                                response = dict(response)
+                                response["body"] = _io.BytesIO(_json.dumps(wrapped).encode())
+                    except Exception:
+                        pass
+                return response
+
+            def __getattr__(self, item):
+                return getattr(object.__getattribute__(self, "_real"), item)
+
+            def __setattr__(self, key, value):
+                setattr(object.__getattribute__(self, "_real"), key, value)
+
+        def _wrap_client(service_name, *args, **kwargs):
+            client = _orig_client_fn(service_name, *args, **kwargs)
+            if service_name == "bedrock-runtime":
+                return _BedrockClientWrapper(client)
+            return client
+
+        def _wrap_session_client(self_session, service_name, *args, **kwargs):
+            client = _orig_ses_client(self_session, service_name, *args, **kwargs)
+            if service_name == "bedrock-runtime":
+                return _BedrockClientWrapper(client)
+            return client
+
+        boto3.client = _wrap_client
+        _boto3_session.Session.client = _wrap_session_client
+
+    except Exception as exc:
+        print(f"  [loader] WARNING: Bedrock client normalizer patch failed: {exc}")
+
+
+_install_bedrock_client_normalizer()
+
 
 _TRACE_FN_NAMES = ("reset_session", "get_tool_trace", "get_tool_trace_length", "get_tool_trace_since")
 
@@ -544,6 +756,18 @@ def _detect_backend(root_dir: Path) -> tuple:
         if req_path.exists():
             sources.append(req_path.read_text(encoding="utf-8", errors="replace"))
 
+    # Scan provider/backend subdirectories for teams using a factory pattern
+    # (e.g. Eider has llm/groq_provider.py but core/agent.py only imports from llm.factory)
+    _EXTRA_SCAN_DIRS = ["llm", "providers", "backends", "backend", "models"]
+    for subdir in _EXTRA_SCAN_DIRS:
+        scan_dir = root_dir / subdir
+        if scan_dir.is_dir():
+            for py_file in scan_dir.glob("*.py"):
+                try:
+                    sources.append(py_file.read_text(encoding="utf-8", errors="replace"))
+                except Exception:
+                    pass
+
     combined = "\n".join(sources).lower()
 
     # Ollama — local server, always fails in eval env
@@ -552,11 +776,22 @@ def _detect_backend(root_dir: Path) -> tuple:
         host = host_match.group(1) if host_match else "localhost:11434"
         return ("ollama", f"OllamaModel en {host}")
 
+    # Groq — check before OpenAI: groq_provider.py imports openai-compat patterns
+    # but the intent is clearly Groq if groq SDK or GROQ_API_KEY is referenced.
+    if "groq" in combined and (
+        "groq_api_key" in combined
+        or "groq_provider" in combined
+        or re.search(r'(?:from|import)\s+groq\b', combined)
+        or "llmprovider=groq" in combined.replace(" ", "").replace("\n", "").lower()
+        or "llm_provider.*=.*groq" in re.sub(r'\s+', '', combined).lower()
+    ):
+        return ("groq", "Groq SDK detectado")
+
     # OpenAI
     if "openai" in combined:
         return ("openai", "openai SDK detectado")
 
-    # Groq (Sofia_Moreno, Eider — use groq SDK as LLM provider)
+    # Groq fallback (mentioned but not via explicit import)
     if "groq" in combined:
         return ("groq", "Groq SDK detectado")
 
@@ -796,7 +1031,7 @@ def _install_requirements(root_dir: Path, team_name: str, zip_path: Path, cache_
     return full_log
 
 
-def _inject_aws_env() -> dict:
+def _inject_aws_env(backend_tag: str = "unknown") -> dict:
     """
     Pre-inject our AWS credentials and infrastructure config into os.environ
     BEFORE loading the team's module.  python-dotenv's load_dotenv() (without
@@ -867,10 +1102,18 @@ def _inject_aws_env() -> dict:
     # DynamoDB session table (JULIAN_DAVID uses strata_sessions)
     os.environ.setdefault("DYNAMO_SESSION_TABLE", "strata_sessions")
 
-    # LLM provider — some teams (e.g. jose_david) default to Ollama/local LLM.
-    # Force Bedrock so they hit the correct backend in our eval environment.
-    os.environ.setdefault("LLM_PROVIDER", "bedrock")
-    os.environ.setdefault("LLM_BACKEND", "bedrock")
+    # LLM provider — inject a value matching the detected backend so factory-pattern
+    # teams (e.g. Eider with llm/factory.py) get the right provider string.
+    # For groq/openai/ollama backends we keep their native provider name; the shim
+    # then intercepts that provider's SDK and routes it to Bedrock transparently.
+    _llm_provider_default = {
+        "groq":             "groq",
+        "openai":           "openai",
+        "ollama":           "ollama",
+        "anthropic-direct": "anthropic",
+    }.get(backend_tag, "bedrock")
+    os.environ.setdefault("LLM_PROVIDER", _llm_provider_default)
+    os.environ.setdefault("LLM_BACKEND",  _llm_provider_default)
 
     # Bedrock model IDs — inject our known-working model so teams that read their
     # model from env vars get a model accessible in this account.
@@ -1319,6 +1562,33 @@ def _make_anthropic_sdk_shim():
             text = _json.loads(resp["body"].read()).get("content", [{}])[0].get("text", "")
             return _Response(text)
 
+        def stream(self, **kwargs):
+            """Context manager mimicking anthropic SDK's messages.stream().
+            Supports: with client.messages.stream(...) as s:
+                s.text_stream (iterator), s.get_final_message(), iter(s)
+            """
+            from contextlib import contextmanager as _cm
+
+            @_cm
+            def _stream_ctx():
+                result = self.create(**kwargs)
+                text = result.content[0].text if result.content else ""
+
+                class _StreamWrapper:
+                    def __init__(self):
+                        self.text_stream = iter([text])
+                        self._msg = result
+                    def get_final_message(self):
+                        return self._msg
+                    def get_final_text(self):
+                        return text
+                    def __iter__(self):
+                        return iter([text])
+
+                yield _StreamWrapper()
+
+            return _stream_ctx()
+
     class _BedrockAnthropicShim:
         def __init__(self, **kwargs):
             self.messages = _Messages()
@@ -1541,7 +1811,7 @@ def _dynamic_import_create_agent(root_dir: Path, team_name: str, backend_tag: st
 
     # Pre-inject our AWS credentials BEFORE exec_module so that team's load_dotenv()
     # (which by default doesn't override existing env vars) keeps our values.
-    aws_snapshot = _inject_aws_env()
+    aws_snapshot = _inject_aws_env(backend_tag=backend_tag)
 
     # Install LLM shims BEFORE exec_module so that `from strands.models.ollama import
     # OllamaModel` (and similar) at module level resolve to our shim classes.

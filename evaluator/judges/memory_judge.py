@@ -144,10 +144,10 @@ HISTORIAL DE LA CONVERSACIÓN (turnos anteriores):
 {history_text}
 
 TURNO ACTUAL:
-- Pregunta del usuario: {json.dumps(user_input, ensure_ascii=False)}
-- Respuesta final del agente: {json.dumps(agent_response, ensure_ascii=False)}
-- Expected data: {json.dumps(expected_data, ensure_ascii=False)}
-- Hallazgos determinísticos previos: {json.dumps(deterministic_issues, ensure_ascii=False)}
+- Pregunta del usuario: {json.dumps(user_input, ensure_ascii=False, default=str)}
+- Respuesta final del agente: {json.dumps(agent_response, ensure_ascii=False, default=str)}
+- Expected data: {json.dumps(expected_data, ensure_ascii=False, default=str)}
+- Hallazgos determinísticos previos: {json.dumps(deterministic_issues, ensure_ascii=False, default=str)}
 - Score cap máximo permitido: {score_cap}
 
 CONFIGURACIÓN DEL ESCENARIO:

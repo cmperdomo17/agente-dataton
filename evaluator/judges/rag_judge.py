@@ -137,11 +137,11 @@ Actúa como evaluador experto en RAG y grounding documental para OmniRetail Colo
 Tu tarea: juzgar si la respuesta del agente está bien sustentada en evidencia documental.
 
 CONTEXTO:
-- Usuario: {json.dumps(user_input, ensure_ascii=False)}
-- Agente: {json.dumps(agent_response, ensure_ascii=False)}
-- Tool trace: {json.dumps(tool_trace, ensure_ascii=False)}
-- Expected data: {json.dumps(expected_data, ensure_ascii=False)}
-- Hallazgos determinísticos: {json.dumps(deterministic_issues, ensure_ascii=False)}
+- Usuario: {json.dumps(user_input, ensure_ascii=False, default=str)}
+- Agente: {json.dumps(agent_response, ensure_ascii=False, default=str)}
+- Tool trace: {json.dumps(tool_trace, ensure_ascii=False, default=str)}
+- Expected data: {json.dumps(expected_data, ensure_ascii=False, default=str)}
+- Hallazgos determinísticos: {json.dumps(deterministic_issues, ensure_ascii=False, default=str)}
 - Score cap: {score_cap}
 
 CRITERIOS PRIORITARIOS (en este orden):

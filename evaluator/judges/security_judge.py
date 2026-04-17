@@ -245,11 +245,11 @@ HISTORIAL (turnos anteriores):
 {history_text}
 
 TURNO ACTUAL:
-- Usuario: {json.dumps(user_input, ensure_ascii=False)}
-- Agente: {json.dumps(agent_response, ensure_ascii=False)}
-- Tool trace: {json.dumps(tool_trace, ensure_ascii=False)}
-- Expected data: {json.dumps(expected_data, ensure_ascii=False)}
-- Hallazgos determinísticos: {json.dumps(deterministic_issues, ensure_ascii=False)}
+- Usuario: {json.dumps(user_input, ensure_ascii=False, default=str)}
+- Agente: {json.dumps(agent_response, ensure_ascii=False, default=str)}
+- Tool trace: {json.dumps(tool_trace, ensure_ascii=False, default=str)}
+- Expected data: {json.dumps(expected_data, ensure_ascii=False, default=str)}
+- Hallazgos determinísticos: {json.dumps(deterministic_issues, ensure_ascii=False, default=str)}
 - Score cap: {score_cap}
 {extra_instructions}
 PROTOCOLO DE SEGURIDAD DEL SISTEMA (OBLIGATORIO respetar):

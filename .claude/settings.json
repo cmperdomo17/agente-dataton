@@ -108,7 +108,15 @@
       "Bash(python3 -c \"import sys; sys.path.insert\\(0, '/Users/valentinagomez/Desktop/Strata/agente-dataton'\\); import submission_loader; print\\('submission_loader OK'\\); from evaluator.judges.data_judge import DataJudge; print\\('data_judge OK'\\)\")",
       "Bash(python3 -c \"import sys; sys.path.insert\\(0, '/Users/valentinagomez/Desktop/Strata/agente-dataton'\\); import submission_loader; print\\('OK'\\)\")",
       "Bash(ls /Users/valentinagomez/Desktop/Strata/agente-dataton/.env* cat /Users/valentinagomez/Desktop/Strata/agente-dataton/.env)",
-      "Bash(python3 -c \"import submission_loader; print\\('OK'\\)\")"
+      "Bash(python3 -c \"import submission_loader; print\\('OK'\\)\")",
+      "Bash(python3 /tmp/check_eval_env.py)",
+      "Bash(xargs cat *)",
+      "Bash(python -c \"import submission_loader; print\\('OK'\\)\")",
+      "Bash(ls submissions/*.zip)",
+      "Bash(python batch_eval.py --teams \"JuanFe\" \"jorge_andres\")",
+      "Bash(python batch_eval.py --help)",
+      "Bash(python -c \" import sys, os from submission_loader import SubmissionLoader loader = SubmissionLoader\\('submissions'\\) subs = loader.load_all\\(\\) for s in subs: name = s.team_name.lower\\(\\) if 'juanfe' in name or 'jorge' in name or 'eider' in name: failed = [c.name for c in s.contract_checks if not c.passed] print\\(f'{s.team_name!r:45} backend={s.backend_tag!r:20} valid={s.contract_passed} failed={failed}', file=sys.stderr\\) \")",
+      "Bash(python -c \"from evaluator.cases.golden_dataset import GOLDEN_SCENARIOS; print\\([s['id'] for s in GOLDEN_SCENARIOS[:5]]\\)\")"
     ],
     "additionalDirectories": [
       "/var/folders/gz/8_cl9rrj3c9b_j93_81k54440000gn/T",
