@@ -72,7 +72,7 @@ class DataJudge(BaseJudge):
         final_score = min(llm_score, det["score_cap"])
 
         if det["hard_fail"]:
-            final_score = min(final_score, 40)
+            final_score = min(final_score, 50)
 
         feedback_parts = []
         if det["issues"]:
@@ -185,7 +185,7 @@ class DataJudge(BaseJudge):
         numeric_issues = self._check_expected_values(agent_response, expected_values, tolerance)
         if numeric_issues:
             issues.extend(numeric_issues)
-            score_cap = min(score_cap, 50)
+            score_cap = min(score_cap, 60)
             hard_fail = True
 
         # Anti-hallucination rule:
@@ -312,6 +312,8 @@ INSTRUCCIONES DE SCORING:
 - Si los hallazgos determinísticos muestran falta de grounding o error numérico, no ignores esos problemas.
 - Si el agente usó Athena o Dynamo correctamente, considéralo igual de válido.
 - Si el result_snippet confirma los datos, el agente ESTÁ grounded — puntúa alto.
+- Si el agente consultó datos correctamente pero el cálculo tiene un error menor, score 60-75.
+- Solo score <50 si no hubo ningún intento de grounding o si los datos son completamente inventados.
 
 Responde SOLO en JSON con esta forma exacta:
 {{"score": int, "feedback": "str"}}

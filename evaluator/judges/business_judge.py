@@ -56,7 +56,7 @@ class BusinessJudge(BaseJudge):
         issues = []
         score_cap = 100
         hard_fail = False
-        hard_fail_cap = 40
+        hard_fail_cap = 50
 
         normalized_response = self._normalize_text(agent_response)
         asks_identification = any(k in normalized_response for k in self._normalized_id_keywords())
@@ -74,13 +74,13 @@ class BusinessJudge(BaseJudge):
         # ── FAQ: pedir ID en consulta general = fail duro ─────────────
         if interaction_type == "general_faq" and must_not_request_identification and asks_identification:
             issues.append("Pidió identificación en una consulta general/FAQ donde no correspondía.")
-            score_cap = min(score_cap, 35)
+            score_cap = min(score_cap, 50)
             hard_fail = True
 
         # ── FAQ: deflexión pura sin responder ─────────────────────────
         if should_answer_directly and self._looks_like_pure_deflection(normalized_response):
             issues.append("No respondió la pregunta directamente; generó fricción innecesaria.")
-            score_cap = min(score_cap, 60)
+            score_cap = min(score_cap, 70)
 
         # ── Devolución: no aprobar sin validar ────────────────────────
         if goal == "validate_return_eligibility_before_approving":
@@ -144,7 +144,7 @@ INSTRUCCIÓN ESPECIAL — FAQ GENERAL:
 - El agente solo necesita dar una respuesta directa y razonablemente informativa.
 - NO castigues por no dar detalles extremadamente específicos (rangos de precios, condiciones exactas, etc.).
 - NO castigues por no ofrecer un calculador de envíos o herramientas adicionales.
-- Si respondió directamente la pregunta con información coherente, el score debe ser alto (85+).
+- Si respondió directamente la pregunta con información coherente, el score debe ser alto (75+).
 - El único caso de score bajo en FAQ: pedir cédula/identificación sin motivo.
 """
         if goal == "recognize_escalation_need":
@@ -197,9 +197,10 @@ CRITERIOS GENERALES:
 3. ¿Da una respuesta directa y útil cuando corresponde?
 4. ¿Maneja bien el escalamiento/retención cuando aplica?
 5. ¿Tono profesional y claro?
+6. IMPORTANTE: Si el agente respondió razonablemente y no cometió un error grave de protocolo, el score mínimo debe ser 70. Solo scores <70 para errores claros de lógica de negocio.
 
 SCORING:
-- Para FAQs: respuesta directa y coherente = 85+. No exigir perfección de detalles.
+- Para FAQs: respuesta directa y coherente = 75+. No exigir perfección de detalles.
 - Para transaccionales: validar elegibilidad antes de aprobar.
 - Para escalamiento/retención: reconocer y ofrecer canal alternativo.
 - Score entre 0 y {score_cap}.

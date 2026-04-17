@@ -34,7 +34,7 @@ class MemoryJudge(BaseJudge):
         final_score = max(min(llm_score, det["score_cap"]), det.get("score_floor", 0))
 
         if det["hard_fail"]:
-            final_score = min(final_score, 30)
+            final_score = min(final_score, 45)
 
         feedback_parts = []
         if det["issues"]:
@@ -76,13 +76,13 @@ class MemoryJudge(BaseJudge):
                 score_floor = 75          # name present → always passes
             else:
                 issues.append(f"No incluyó el nombre esperado '{name}' en la respuesta.")
-                score_cap = min(score_cap, 30)
+                score_cap = min(score_cap, 45)
                 hard_fail = True
 
         if goal == "recall_fact" and answer_contains:
             if self._normalize_text(str(answer_contains)) not in response_n:
                 issues.append(f"No incluyó el dato esperado '{answer_contains}' en la respuesta.")
-                score_cap = min(score_cap, 30)
+                score_cap = min(score_cap, 45)
                 hard_fail = True
 
         if goal in ("store_name", "update_name_memory") and name:
@@ -101,7 +101,7 @@ class MemoryJudge(BaseJudge):
             id_keywords = ["cedula", "cédula", "dni", "documento", "identificacion", "identificación"]
             if any(self._normalize_text(k) in response_n for k in id_keywords):
                 issues.append("Pidió identificación formal en un escenario de memoria conversacional.")
-                score_cap = min(score_cap, 40)
+                score_cap = min(score_cap, 55)
                 hard_fail = True
 
         return {

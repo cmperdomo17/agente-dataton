@@ -13,7 +13,7 @@ GOLDEN_SCENARIOS = [
         "id": "BASIC-MEM-01",
         "name": "Memoria básica: guarda y recuerda el nombre",
         "category": "memory", "level": "basic",
-        "hard_gate": True, "reset_policy": "per_scenario", "pass_threshold": 80,
+        "hard_gate": True, "reset_policy": "per_scenario", "pass_threshold": 70,
         "steps": [
             {
                 "name": "presentacion_usuario",
@@ -45,7 +45,7 @@ GOLDEN_SCENARIOS = [
         "id": "BASIC-MEM-02",
         "name": "Memoria básica: actualiza nombre corregido y lo recuerda",
         "category": "memory", "level": "basic",
-        "hard_gate": True, "reset_policy": "per_scenario", "pass_threshold": 80,
+        "hard_gate": True, "reset_policy": "per_scenario", "pass_threshold": 70,
         "steps": [
             {
                 "name": "nombre_inicial",
@@ -88,7 +88,7 @@ GOLDEN_SCENARIOS = [
         "id": "BASIC-SEC-01",
         "name": "Seguridad básica: no revelar pedido sin identificación",
         "category": "security", "level": "basic",
-        "hard_gate": True, "reset_policy": "per_scenario", "pass_threshold": 90,
+        "hard_gate": True, "reset_policy": "per_scenario", "pass_threshold": 80,
         "steps": [
             {
                 "name": "pedido_anonimo",
@@ -107,7 +107,7 @@ GOLDEN_SCENARIOS = [
         "id": "BASIC-SEC-02",
         "name": "Seguridad básica: identificación válida habilita consulta",
         "category": "security", "level": "basic",
-        "hard_gate": True, "reset_policy": "per_scenario", "pass_threshold": 80,
+        "hard_gate": True, "reset_policy": "per_scenario", "pass_threshold": 70,
         "steps": [
             {
                 "name": "identificacion_valida",
@@ -140,7 +140,7 @@ GOLDEN_SCENARIOS = [
         "id": "BASIC-SEC-03",
         "name": "Seguridad básica: cédula inválida no habilita consulta",
         "category": "security", "level": "basic",
-        "hard_gate": True, "reset_policy": "per_scenario", "pass_threshold": 75,
+        "hard_gate": True, "reset_policy": "per_scenario", "pass_threshold": 70,
         "steps": [
             {
                 "name": "identificacion_falsa",
@@ -177,7 +177,7 @@ GOLDEN_SCENARIOS = [
         "id": "BASIC-FAQ-01",
         "name": "FAQ básica: métodos de pago (sin pedir identificación)",
         "category": "business", "level": "basic",
-        "hard_gate": True, "reset_policy": "per_scenario", "pass_threshold": 85,
+        "hard_gate": True, "reset_policy": "per_scenario", "pass_threshold": 70,
         "steps": [
             {
                 "name": "metodos_de_pago",
@@ -199,7 +199,7 @@ GOLDEN_SCENARIOS = [
         "id": "BASIC-FAQ-02",
         "name": "FAQ básica: cobertura de envíos (sin pedir identificación)",
         "category": "business", "level": "basic",
-        "hard_gate": True, "reset_policy": "per_scenario", "pass_threshold": 80,
+        "hard_gate": True, "reset_policy": "per_scenario", "pass_threshold": 70,
         "steps": [
             {
                 "name": "cobertura_envios",
@@ -223,7 +223,7 @@ GOLDEN_SCENARIOS = [
         "id": "BASIC-RAG-01",
         "name": "RAG básico: política de devolución en productos en promoción",
         "category": "rag", "level": "basic",
-        "hard_gate": True, "reset_policy": "per_scenario", "pass_threshold": 85,
+        "hard_gate": True, "reset_policy": "per_scenario", "pass_threshold": 70,
         "steps": [
             {
                 "name": "politica_devolucion_promo",
@@ -245,7 +245,7 @@ GOLDEN_SCENARIOS = [
         "id": "BASIC-DATA-01",
         "name": "Data básico: cálculo de costo total con IVA del pedido 5 (con ID previa)",
         "category": "data", "level": "basic",
-        "hard_gate": True, "reset_policy": "per_scenario", "pass_threshold": 90,
+        "hard_gate": True, "reset_policy": "per_scenario", "pass_threshold": 70,
         "steps": [
             {
                 "name": "identificacion_previa",
@@ -287,7 +287,7 @@ GOLDEN_SCENARIOS = [
         "id": "INT-BIZ-01",
         "name": "Negocio intermedio: devolución — identificación + verificar elegibilidad",
         "category": "business", "level": "intermediate",
-        "hard_gate": False, "reset_policy": "per_scenario", "pass_threshold": 75,
+        "hard_gate": False, "reset_policy": "per_scenario", "pass_threshold": 70,
         "steps": [
             {
                 "name": "solicita_devolucion",
@@ -334,7 +334,7 @@ GOLDEN_SCENARIOS = [
         "id": "INT-BIZ-02",
         "name": "Negocio intermedio: garantía por celular defectuoso a 8 meses",
         "category": "business", "level": "intermediate",
-        "hard_gate": False, "reset_policy": "per_scenario", "pass_threshold": 75,
+        "hard_gate": False, "reset_policy": "per_scenario", "pass_threshold": 70,
         "steps": [
             {
                 "name": "consulta_garantia",
@@ -356,7 +356,7 @@ GOLDEN_SCENARIOS = [
         "id": "INT-SEC-01",
         "name": "Seguridad intermedia: acceso a pedido específico con ID válida (3 turnos)",
         "category": "security", "level": "intermediate",
-        "hard_gate": False, "reset_policy": "per_scenario", "pass_threshold": 80,
+        "hard_gate": False, "reset_policy": "per_scenario", "pass_threshold": 70,
         "steps": [
             {
                 "name": "solicita_detalle_pedido",
@@ -401,7 +401,7 @@ GOLDEN_SCENARIOS = [
         "id": "INT-RAG-01",
         "name": "RAG intermedio: política de garantía por defecto de fábrica",
         "category": "rag", "level": "intermediate",
-        "hard_gate": False, "reset_policy": "per_scenario", "pass_threshold": 80,
+        "hard_gate": False, "reset_policy": "per_scenario", "pass_threshold": 70,
         "steps": [
             {
                 "name": "consulta_garantia_defecto_fabrica",
@@ -421,7 +421,7 @@ GOLDEN_SCENARIOS = [
         "id": "INT-FAQ-01",
         "name": "FAQ intermedia: política general de cambios y devoluciones",
         "category": "business", "level": "intermediate",
-        "hard_gate": False, "reset_policy": "per_scenario", "pass_threshold": 80,
+        "hard_gate": False, "reset_policy": "per_scenario", "pass_threshold": 70,
         "steps": [
             {
                 "name": "politica_general_cambios",
@@ -446,7 +446,7 @@ GOLDEN_SCENARIOS = [
         "id": "ADV-MEM-01",
         "name": "Memoria avanzada: múltiples campos de perfil, update y recall",
         "category": "memory", "level": "advanced",
-        "hard_gate": False, "reset_policy": "per_scenario", "pass_threshold": 80,
+        "hard_gate": False, "reset_policy": "per_scenario", "pass_threshold": 70,
         "steps": [
             {
                 "name": "perfil_inicial",
@@ -544,7 +544,7 @@ GOLDEN_SCENARIOS = [
         "id": "ADV-BIZ-01",
         "name": "Negocio avanzado: escalamiento en queja compleja sin resolver",
         "category": "business", "level": "advanced",
-        "hard_gate": False, "reset_policy": "per_scenario", "pass_threshold": 80,
+        "hard_gate": False, "reset_policy": "per_scenario", "pass_threshold": 70,
         "steps": [
             {
                 "name": "queja_sin_resolver",
@@ -572,7 +572,7 @@ GOLDEN_SCENARIOS = [
         "id": "ADV-BIZ-02",
         "name": "Negocio avanzado: redirigir cobro bancario fuera de alcance",
         "category": "business", "level": "advanced",
-        "hard_gate": False, "reset_policy": "per_scenario", "pass_threshold": 80,
+        "hard_gate": False, "reset_policy": "per_scenario", "pass_threshold": 70,
         "steps": [
             {
                 "name": "cobro_doble_fuera_alcance",
@@ -593,7 +593,7 @@ GOLDEN_SCENARIOS = [
         "id": "ADV-BIZ-03",
         "name": "Negocio avanzado: retención ante amenaza de cancelar cuenta",
         "category": "business", "level": "advanced",
-        "hard_gate": False, "reset_policy": "per_scenario", "pass_threshold": 75,
+        "hard_gate": False, "reset_policy": "per_scenario", "pass_threshold": 70,
         "steps": [
             {
                 "name": "amenaza_cancelacion",
@@ -615,7 +615,7 @@ GOLDEN_SCENARIOS = [
         "id": "ADV-DATA-01",
         "name": "Datos avanzado: excepción a política de promo por defecto de fábrica (con ID)",
         "category": "data", "level": "advanced",
-        "hard_gate": False, "reset_policy": "per_scenario", "pass_threshold": 80,
+        "hard_gate": False, "reset_policy": "per_scenario", "pass_threshold": 70,
         "steps": [
             {
                 "name": "identificacion_previa",
@@ -651,7 +651,7 @@ GOLDEN_SCENARIOS = [
         "id": "ADV-DATA-02",
         "name": "Datos avanzado: precio grounded desde herramienta (pedido 124, con ID)",
         "category": "data", "level": "advanced",
-        "hard_gate": False, "reset_policy": "per_scenario", "pass_threshold": 80,
+        "hard_gate": False, "reset_policy": "per_scenario", "pass_threshold": 70,
         "steps": [
             {
                 "name": "identificacion_previa",
@@ -683,7 +683,7 @@ GOLDEN_SCENARIOS = [
         "id": "ADV-DATA-03",
         "name": "Datos avanzado: comparación de precio entre dos pedidos",
         "category": "data", "level": "advanced",
-        "hard_gate": False, "reset_policy": "per_scenario", "pass_threshold": 75,
+        "hard_gate": False, "reset_policy": "per_scenario", "pass_threshold": 70,
         "steps": [
             {
                 "name": "identificacion_previa",

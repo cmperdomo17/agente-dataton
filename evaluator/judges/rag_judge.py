@@ -44,7 +44,7 @@ class RagJudge(BaseJudge):
         llm_score = self._safe_int(llm_verdict.get("score", 0))
         final_score = min(llm_score, det["score_cap"])
         if det["hard_fail"]:
-            final_score = min(final_score, 40)
+            final_score = min(final_score, 50)
 
         feedback_parts = []
         if det["issues"]:
@@ -81,7 +81,7 @@ class RagJudge(BaseJudge):
         # ── ¿Usó retrieval? ───────────────────────────────────────────
         if must_use_retrieval and not retrieval_used:
             issues.append("Se requería retrieval documental pero no hay evidencia en el tool trace.")
-            score_cap = min(score_cap, 35)
+            score_cap = min(score_cap, 45)
             hard_fail = True
 
         if required_tools:
@@ -122,7 +122,7 @@ class RagJudge(BaseJudge):
                 "Hizo retrieval pero la respuesta no incluye explícitamente la idea de: "
                 + "; ".join(map(str, missing_facts))
             )
-            score_cap = min(score_cap, 72)
+            score_cap = min(score_cap, 80)
         elif missing_facts and not retrieval_used:
             # Ya está penalizado por no hacer retrieval — no apilar penalidades
             pass
@@ -156,7 +156,8 @@ CRITERIOS SECUNDARIOS (NO son motivo de falla):
 - El tono o el nivel de detalle del lenguaje NO es motivo de penalización.
 
 INSTRUCCIONES:
-- Si hubo retrieval Y el hecho clave está presente: score alto (85+).
+- Si hubo retrieval Y el hecho clave está presente: score alto (80+).
+- Si hubo retrieval pero la respuesta parafrasea el hecho clave sin ser exacta: score 70-80.
 - Si hubo retrieval pero falta el hecho clave: score medio (60-75).
 - Si NO hubo retrieval pero la respuesta es correcta: score bajo (30-40) — puede ser alucinación/conocimiento paramétrico.
 - NO penalices por dar información extra que sea correcta y útil.

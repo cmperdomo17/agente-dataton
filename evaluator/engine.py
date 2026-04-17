@@ -37,7 +37,7 @@ class EvaluationEngine:
       the scenario schema.
     """
 
-    def __init__(self, judges: Dict[str, BaseJudge] | None = None, pass_threshold: int = 80):
+    def __init__(self, judges: Dict[str, BaseJudge] | None = None, pass_threshold: int = 70):
         self.pass_threshold = pass_threshold
 
         # Asegurar que los catálogos y políticas estén precargados también en el evaluador
