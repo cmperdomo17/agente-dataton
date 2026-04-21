@@ -30,6 +30,7 @@ results/
 submissions/*.zip
 submissions-aws/*.zip
 submissions/.eval_cache/
+submissions-aws/.eval_cache/
 .claude/
 .claude/settings.json
 .claude/settings.json

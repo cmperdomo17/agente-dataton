@@ -116,11 +116,13 @@
       "Bash(python batch_eval.py --teams \"JuanFe\" \"jorge_andres\")",
       "Bash(python batch_eval.py --help)",
       "Bash(python -c \" import sys, os from submission_loader import SubmissionLoader loader = SubmissionLoader\\('submissions'\\) subs = loader.load_all\\(\\) for s in subs: name = s.team_name.lower\\(\\) if 'juanfe' in name or 'jorge' in name or 'eider' in name: failed = [c.name for c in s.contract_checks if not c.passed] print\\(f'{s.team_name!r:45} backend={s.backend_tag!r:20} valid={s.contract_passed} failed={failed}', file=sys.stderr\\) \")",
-      "Bash(python -c \"from evaluator.cases.golden_dataset import GOLDEN_SCENARIOS; print\\([s['id'] for s in GOLDEN_SCENARIOS[:5]]\\)\")"
+      "Bash(python -c \"from evaluator.cases.golden_dataset import GOLDEN_SCENARIOS; print\\([s['id'] for s in GOLDEN_SCENARIOS[:5]]\\)\")",
+      "Bash(python /tmp/run_manual_evals.py)"
     ],
     "additionalDirectories": [
       "/var/folders/gz/8_cl9rrj3c9b_j93_81k54440000gn/T",
-      "/tmp"
+      "/tmp",
+      "/private/var/folders/gz/8_cl9rrj3c9b_j93_81k54440000gn/T/omni_eval_stable/Harold_Velasquez_Reto/core"
     ]
   }
 }

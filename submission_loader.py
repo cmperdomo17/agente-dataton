@@ -261,9 +261,15 @@ def _install_bedrock_client_normalizer():
                         break
                 # Strip flat keys we may have injected into previous response blocks.
                 # Teams store the normalised response in their conversation history and
-                # resend it; AWS rejects blocks that have BOTH a "toolUse" dict AND a
-                # flat "type" key (tagged-union violation).
-                _FLAT_KEYS = ("type", "toolUseId", "name", "input")
+                # resend it; AWS rejects blocks that have BOTH a "toolUse"/"toolResult"
+                # dict AND a flat "type" key (tagged-union violation).
+                # Rule: "type" is NEVER valid at top level in a Converse content block.
+                #       "toolUseId"/"name"/"input" are only valid INSIDE toolUse, not at top level.
+                _CONVERSE_CONTENT_KEYS = frozenset((
+                    "text", "image", "document", "video", "audio",
+                    "toolUse", "toolResult", "guardContent", "cachePoint",
+                    "reasoningContent", "citationsContent", "searchResult",
+                ))
                 messages = kwargs.get("messages")
                 if messages:
                     cleaned = False
@@ -273,10 +279,18 @@ def _install_bedrock_client_normalizer():
                         if isinstance(content, list):
                             new_content = []
                             for block in content:
-                                if isinstance(block, dict) and "toolUse" in block:
-                                    block = {k: v for k, v in block.items()
-                                             if k not in _FLAT_KEYS}
-                                    cleaned = True
+                                if isinstance(block, dict):
+                                    has_content_key = any(k in block for k in _CONVERSE_CONTENT_KEYS)
+                                    if has_content_key:
+                                        # strip flat "type" from any content block (always invalid at top level)
+                                        keys_to_drop = {"type"} if "type" in block else set()
+                                        # strip toolUse-specific flat keys only for toolUse blocks
+                                        if "toolUse" in block:
+                                            keys_to_drop.update(("toolUseId", "name", "input"))
+                                        if keys_to_drop:
+                                            block = {k: v for k, v in block.items()
+                                                     if k not in keys_to_drop}
+                                            cleaned = True
                                 new_content.append(block)
                             msg = dict(msg); msg["content"] = new_content
                         new_messages.append(msg)
@@ -1564,30 +1578,43 @@ def _make_anthropic_sdk_shim():
 
         def stream(self, **kwargs):
             """Context manager mimicking anthropic SDK's messages.stream().
-            Supports: with client.messages.stream(...) as s:
-                s.text_stream (iterator), s.get_final_message(), iter(s)
+            Supports both sync (with) and async (async with) usage:
+                with client.messages.stream(...) as s: ...
+                async with client.messages.stream(...) as s: ...
+            s supports: .text_stream, .get_final_message(), .get_final_text(), iter(s)
             """
-            from contextlib import contextmanager as _cm
+            _create = self.create
 
-            @_cm
-            def _stream_ctx():
-                result = self.create(**kwargs)
-                text = result.content[0].text if result.content else ""
+            class _StreamCtx:
+                def _build(self):
+                    result = _create(**kwargs)
+                    text = result.content[0].text if result.content else ""
 
-                class _StreamWrapper:
-                    def __init__(self):
-                        self.text_stream = iter([text])
-                        self._msg = result
-                    def get_final_message(self):
-                        return self._msg
-                    def get_final_text(self):
-                        return text
-                    def __iter__(self):
-                        return iter([text])
+                    class _StreamWrapper:
+                        def __init__(self):
+                            self.text_stream = iter([text])
+                            self._msg = result
+                        def get_final_message(self): return self._msg
+                        def get_final_text(self): return text
+                        def __iter__(self): return iter([text])
+                        async def __aiter__(self):
+                            yield text
 
-                yield _StreamWrapper()
+                    return _StreamWrapper()
 
-            return _stream_ctx()
+                # sync context manager
+                def __enter__(self):
+                    self._wrapper = self._build()
+                    return self._wrapper
+                def __exit__(self, *_): pass
+
+                # async context manager — Harold uses `async with`
+                async def __aenter__(self):
+                    self._wrapper = self._build()
+                    return self._wrapper
+                async def __aexit__(self, *_): pass
+
+            return _StreamCtx()
 
     class _BedrockAnthropicShim:
         def __init__(self, **kwargs):
@@ -1741,6 +1768,8 @@ def _install_llm_shims(backend_tag: str) -> Optional[Callable]:
             pass
 
     # ── Groq backend (Sofia_Moreno, Eider_Yesid — use Groq SDK as LLM) ───────
+    # Some groq teams use the raw groq SDK; others use openai.OpenAI with Groq's
+    # base_url (e.g. via Strands LiteLLM).  Shim both so all paths are intercepted.
     if backend_tag == "groq":
         try:
             import groq as _groq
@@ -1749,6 +1778,16 @@ def _install_llm_shims(backend_tag: str) -> Optional[Callable]:
                 _patch(_groq, "AsyncGroq", _make_groq_sdk_shim())
         except ImportError:
             pass
+        # Also patch openai.OpenAI — some groq teams use the OpenAI-compatible client
+        # pointed at api.groq.com (Strands may do this via LiteLLM).
+        try:
+            import openai as _oai
+            _patch(_oai, "OpenAI", _make_openai_sdk_shim())
+            if hasattr(_oai, "AsyncOpenAI"):
+                _patch(_oai, "AsyncOpenAI", _make_openai_sdk_shim())
+        except ImportError:
+            pass
+        _shim_strands_class("openai", "OpenAIModel", _make_strands_bedrock_shim("OpenAIModel"))
 
 
     if not restorers:
