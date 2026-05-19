@@ -31,3 +31,6 @@ submissions/*.zip
 submissions/.eval_cache/
 .claude/
 .claude/settings.json
+
+# Claude
+.claude/

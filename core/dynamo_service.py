@@ -387,6 +387,24 @@ def _pedidos_cliente(customer_id: str) -> str:
     return _to_table(items, cols)
 
 
+def _producto_lite(pid: str) -> dict:
+    """Trae solo los campos de un producto que necesita el detalle de pedido.
+
+    Si la caché ya está cargada, la reutiliza. Si no, hace un get_item puntual
+    a la tabla products en vez de forzar el scan completo de catálogos
+    (categories/brands/stock/products/customers/promotions), que cuesta ~30 s
+    en frío y no aporta nada a la ruta de devolución/garantía.
+    """
+    if _cache.loaded:
+        return _cache.product_map.get(pid, {})
+    try:
+        resp = _tbl("products").get_item(Key={"product_id": int(pid)})
+        return resp.get("Item") or {}
+    except Exception:
+        logger.exception("get_item products fallback falló para product_id=%s", pid)
+        return {}
+
+
 def _detalle_pedido(order_id: str) -> str:
     """Detalle completo de un pedido: resumen, ítems con producto, envíos y tracking."""
     oid = int(order_id.strip())
@@ -394,13 +412,12 @@ def _detalle_pedido(order_id: str) -> str:
     resp = _tbl("orders").get_item(Key={"order_id": oid})
     order = resp.get("Item")
 
-    # Ítems del pedido, enriquecidos con datos del producto desde caché
-    ensure_caches()
+    # Ítems del pedido, enriquecidos con datos del producto (puntual, sin scan global)
     resp = _tbl("order_items").query(KeyConditionExpression=Key("order_id").eq(oid))
     items = resp.get("Items", [])
     for it in items:
         pid = str(int(it.get("product_id", 0)))
-        prod = _cache.product_map.get(pid, {})
+        prod = _producto_lite(pid)
         it["product_name"] = prod.get("name", "")
         it["warranty_months"] = prod.get("warranty_months", "")
         it["return_days"] = prod.get("return_days", "")
